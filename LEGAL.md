@@ -23,9 +23,11 @@ THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPL
 
 ### Budget Enforcement Limitations
 
-- **Budgets are advisory by design.** Snowflake does not currently expose an API to block or throttle Cortex Code usage at the user level.
-- The enforcement mechanism works by revoking a configurable database role (`CORTEX_USER_ROLE` by default). This only prevents usage if the `SNOWFLAKE.CORTEX_USER` database role has been properly removed from the `PUBLIC` role and granted exclusively through the managed role.
-- There is no guarantee that enforcement will prevent all credit consumption due to the ~1 hour data lag.
+- Enforcement uses Snowflake's **native daily credit limit parameters** (`CORTEX_CODE_CLI_DAILY_EST_CREDIT_LIMIT_PER_USER` and `CORTEX_CODE_SNOWSIGHT_DAILY_EST_CREDIT_LIMIT_PER_USER`) to block over-budget users by setting their limits to `0`.
+- These parameters enforce a **rolling 24-hour window**, which is different from the app's period-based (monthly/weekly/quarterly) budget tracking.
+- `ACCOUNT_USAGE` views have up to **~1 hour data lag**. Enforcement decisions are based on lagged data, so a user may consume credits beyond their budget before being blocked.
+- For instant cost control, use the **Model Allowlist** (`CORTEX_ENABLED_CROSS_REGION`) which takes effect immediately.
+- `ALTER ACCOUNT SET` and `ALTER USER SET` for these parameters require **ACCOUNTADMIN** privileges.
 
 ### Your Responsibility
 

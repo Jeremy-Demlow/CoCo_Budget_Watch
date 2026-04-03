@@ -511,7 +511,8 @@ def clear_caches():
 
 LATENCY_BANNER = (
     "**Data Freshness:** ACCOUNT_USAGE views can lag up to **~1 hour**. "
-    "Enable **Enforcement** to automatically revoke access when budgets are exceeded."
+    "Enable **Enforcement** to automatically block access when budgets are exceeded "
+    "using Snowflake's native daily credit limit parameters."
 )
 
 
@@ -644,29 +645,25 @@ def get_available_models() -> list[str]:
 
 
 def revoke_user_cortex_access(user_name: str, reason: str = "Over budget") -> str | None:
-    cfg = get_config()
-    role = cfg.get("ENFORCEMENT_ROLE", "CORTEX_USER_ROLE")
     safe_user = user_name.replace("'", "''")
-    err = run_ddl(f"REVOKE ROLE {role} FROM USER \"{safe_user}\"")
+    err = block_user_cortex_code(user_name)
     if not err:
         safe_reason = reason.replace("'", "''")
         run_ddl(
             f"INSERT INTO {FQN}.ENFORCEMENT_LOG (ACTION, USER_NAME, REASON) "
-            f"VALUES ('REVOKE', '{safe_user}', '{safe_reason}')"
+            f"VALUES ('BLOCK', '{safe_user}', '{safe_reason}')"
         )
     return err
 
 
 def grant_user_cortex_access(user_name: str, reason: str = "Budget reset / manual") -> str | None:
-    cfg = get_config()
-    role = cfg.get("ENFORCEMENT_ROLE", "CORTEX_USER_ROLE")
     safe_user = user_name.replace("'", "''")
-    err = run_ddl(f"GRANT ROLE {role} TO USER \"{safe_user}\"")
+    err = unblock_user_cortex_code(user_name)
     if not err:
         safe_reason = reason.replace("'", "''")
         run_ddl(
             f"INSERT INTO {FQN}.ENFORCEMENT_LOG (ACTION, USER_NAME, REASON) "
-            f"VALUES ('GRANT', '{safe_user}', '{safe_reason}')"
+            f"VALUES ('UNBLOCK', '{safe_user}', '{safe_reason}')"
         )
     return err
 
@@ -687,6 +684,10 @@ def user_has_role(user_name: str, role_name: str = None) -> bool:
     return user_name.upper() in [u.upper() for u in get_users_with_role(role_name)]
 
 
+def user_has_access(user_name: str) -> bool:
+    return not user_is_blocked(user_name)
+
+
 def restore_access_if_under_budget(
     user_name: str, user_id: int, period_start: str, period_end: str
 ) -> dict:
@@ -694,9 +695,8 @@ def restore_access_if_under_budget(
     if cfg.get("ENFORCEMENT_ENABLED", "false").lower() != "true":
         return {"action": "none", "reason": "enforcement_disabled"}
 
-    role = cfg.get("ENFORCEMENT_ROLE", "CORTEX_USER_ROLE")
-    if user_has_role(user_name, role):
-        return {"action": "none", "reason": "already_has_role"}
+    if user_has_access(user_name):
+        return {"action": "none", "reason": "already_has_access"}
 
     all_spend = get_all_users_spend(period_start, period_end)
     if all_spend.empty:
@@ -705,13 +705,13 @@ def restore_access_if_under_budget(
     user_row = all_spend[all_spend["USER_NAME"] == user_name]
     if user_row.empty:
         err = grant_user_cortex_access(user_name, "Auto-restore: no spend data")
-        return {"action": "grant", "error": err}
+        return {"action": "unblock", "error": err}
 
     status = user_row.iloc[0].get("STATUS", "")
     if status in ("OK", "WARNING", "NO BUDGET"):
         reason = f"Auto-restore: now {status} after budget/top-up change"
         err = grant_user_cortex_access(user_name, reason)
-        return {"action": "grant", "error": err}
+        return {"action": "unblock", "error": err}
 
     return {"action": "none", "reason": f"still_{status}"}
 
@@ -836,16 +836,16 @@ def run_enforcement_cycle(period_start: str, period_end: str) -> dict:
 
         if status == "OVER":
             err = revoke_user_cortex_access(user_name, f"Over budget ({pct:.1f}%)")
-            actions.append({"user": user_name, "action": "REVOKE", "error": err})
+            actions.append({"user": user_name, "action": "BLOCK", "error": err})
             if alert_on_over and recipients and user_id is not None:
                 if not check_alert_already_sent(int(user_id), "OVER", period_key):
                     send_budget_alert(recipients, user_name, pct, budget, used, "OVER")
                     record_alert_sent(int(user_id), "OVER", period_key)
 
         elif status in ("OK", "WARNING"):
-            if not user_has_role(user_name):
+            if user_is_blocked(user_name):
                 err = grant_user_cortex_access(user_name, f"Auto-restore: now {status} ({pct:.1f}%)")
-                actions.append({"user": user_name, "action": "RESTORE", "error": err})
+                actions.append({"user": user_name, "action": "UNBLOCK", "error": err})
 
             if status == "WARNING":
                 if alert_on_warning and recipients and user_id is not None:
@@ -880,6 +880,119 @@ def run_enforcement_cycle(period_start: str, period_end: str) -> dict:
                     actions.append({"user": "ACCOUNT", "action": "ACCOUNT_WARNING_ALERT"})
 
     return {"status": "completed", "actions": actions}
+
+
+PARAM_CLI = "CORTEX_CODE_CLI_DAILY_EST_CREDIT_LIMIT_PER_USER"
+PARAM_SNOWSIGHT = "CORTEX_CODE_SNOWSIGHT_DAILY_EST_CREDIT_LIMIT_PER_USER"
+
+SURFACE_PARAMS = {"CLI": PARAM_CLI, "SNOWSIGHT": PARAM_SNOWSIGHT}
+
+
+def get_account_credit_limits() -> dict:
+    result = {}
+    for surface, param in SURFACE_PARAMS.items():
+        df, err = run_query(f"SHOW PARAMETERS LIKE '{param}' IN ACCOUNT")
+        if err or df.empty:
+            result[surface] = {"value": -1, "level": "DEFAULT"}
+            continue
+        row = df.iloc[0]
+        val_col = "value" if "value" in df.columns else "VALUE"
+        level_col = "level" if "level" in df.columns else "LEVEL"
+        result[surface] = {
+            "value": float(row.get(val_col, -1)),
+            "level": str(row.get(level_col, "DEFAULT")),
+        }
+    return result
+
+
+def set_account_credit_limit(surface: str, value: float) -> str | None:
+    param = SURFACE_PARAMS.get(surface.upper())
+    if not param:
+        return f"Unknown surface: {surface}"
+    return run_ddl(f"ALTER ACCOUNT SET {param} = {value}")
+
+
+def unset_account_credit_limit(surface: str) -> str | None:
+    param = SURFACE_PARAMS.get(surface.upper())
+    if not param:
+        return f"Unknown surface: {surface}"
+    return run_ddl(f"ALTER ACCOUNT UNSET {param}")
+
+
+def get_user_credit_limit(user_name: str) -> dict:
+    safe_user = user_name.replace('"', '\\"')
+    result = {}
+    for surface, param in SURFACE_PARAMS.items():
+        df, err = run_query(f"SHOW PARAMETERS LIKE '{param}' IN USER \"{safe_user}\"")
+        if err or df.empty:
+            result[surface] = {"value": -1, "level": "DEFAULT"}
+            continue
+        row = df.iloc[0]
+        val_col = "value" if "value" in df.columns else "VALUE"
+        level_col = "level" if "level" in df.columns else "LEVEL"
+        result[surface] = {
+            "value": float(row.get(val_col, -1)),
+            "level": str(row.get(level_col, "DEFAULT")),
+        }
+    return result
+
+
+def set_user_credit_limit(user_name: str, surface: str, value: float) -> str | None:
+    param = SURFACE_PARAMS.get(surface.upper())
+    if not param:
+        return f"Unknown surface: {surface}"
+    safe_user = user_name.replace('"', '\\"')
+    return run_ddl(f'ALTER USER "{safe_user}" SET {param} = {value}')
+
+
+def unset_user_credit_limit(user_name: str, surface: str) -> str | None:
+    param = SURFACE_PARAMS.get(surface.upper())
+    if not param:
+        return f"Unknown surface: {surface}"
+    safe_user = user_name.replace('"', '\\"')
+    return run_ddl(f'ALTER USER "{safe_user}" UNSET {param}')
+
+
+def block_user_cortex_code(user_name: str) -> str | None:
+    err1 = set_user_credit_limit(user_name, "CLI", 0)
+    err2 = set_user_credit_limit(user_name, "SNOWSIGHT", 0)
+    return err1 or err2
+
+
+def unblock_user_cortex_code(user_name: str) -> str | None:
+    err1 = unset_user_credit_limit(user_name, "CLI")
+    err2 = unset_user_credit_limit(user_name, "SNOWSIGHT")
+    return err1 or err2
+
+
+def user_is_blocked(user_name: str) -> bool:
+    limits = get_user_credit_limit(user_name)
+    for surface in ("CLI", "SNOWSIGHT"):
+        info = limits.get(surface, {})
+        if info.get("level") == "USER" and info.get("value") == 0:
+            return True
+    return False
+
+
+def get_all_users_credit_limits() -> pd.DataFrame:
+    users_df = get_users()
+    if users_df.empty:
+        return pd.DataFrame()
+    rows = []
+    for _, u in users_df.iterrows():
+        uname = u["USER_NAME"]
+        limits = get_user_credit_limit(uname)
+        cli_info = limits.get("CLI", {})
+        ss_info = limits.get("SNOWSIGHT", {})
+        if cli_info.get("level") == "USER" or ss_info.get("level") == "USER":
+            rows.append({
+                "USER_NAME": uname,
+                "CLI_LIMIT": cli_info.get("value", -1),
+                "CLI_LEVEL": cli_info.get("level", "DEFAULT"),
+                "SNOWSIGHT_LIMIT": ss_info.get("value", -1),
+                "SNOWSIGHT_LEVEL": ss_info.get("level", "DEFAULT"),
+            })
+    return pd.DataFrame(rows)
 
 
 def get_account_user_breakdown(period_start: str, period_end: str) -> pd.DataFrame:

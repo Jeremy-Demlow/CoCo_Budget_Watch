@@ -1,5 +1,6 @@
 import streamlit as st
 import sys, os
+from streamlit.components.v1 import html as st_html
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -91,6 +92,7 @@ BOOTSTRAP_DDLS = [
         ('DEFAULT_WARNING_THRESHOLD_PCT','80'),('DEFAULT_USER_BASE_PERIOD_CREDITS','100'),
         ('ENABLE_PERSISTED_ROLLUPS','false'),('ENABLE_MODEL_DRILLDOWN','false'),
         ('ENFORCEMENT_ENABLED','false'),('ENFORCEMENT_ROLE','CORTEX_USER_ROLE'),
+        ('DEFAULT_DAILY_CLI_LIMIT','-1'),('DEFAULT_DAILY_SNOWSIGHT_LIMIT','-1'),
         ('EMAIL_INTEGRATION','MY_EMAIL_INT'),('ALERT_RECIPIENTS',''),
         ('ALERT_ON_WARNING','true'),('ALERT_ON_OVER','true'),
         ('CREDIT_RATE_USD','2.00'),
@@ -164,8 +166,9 @@ credit spending across your Snowflake account.
 - **User Budgets** — Set per-user monthly credit limits
   with warning thresholds.
 - **Account Budget** — Set an overall account-level cap.
-- **Enforcement** — Automatically revoke Cortex AI access
-  when a user exceeds their budget.
+- **Enforcement** — Automatically block Cortex Code access
+  when a user exceeds their budget using Snowflake's native
+  daily credit limit parameters.
 - **Model Allowlist** — Restrict which AI models are
   available to control costs.
 - **Email Alerts** — Get notified when users approach
@@ -181,10 +184,25 @@ credit spending across your Snowflake account.
 2. **User Budgets** — Add budgets for each user
    (or bulk-onboard everyone)
 3. **Account Budget** — Set an account-wide credit limit
-4. **Enforcement** — Enable automatic access revocation
-   for over-budget users
+4. **Enforcement** — Enable automatic blocking for
+   over-budget users via native daily credit limits
 5. **Settings** — Configure timezone, defaults, and
    view audit logs
 """)
+
+st_html(
+    """
+    <script>
+    (function() {
+        const INTERVAL_MS = 30000;
+        if (window._stKeepAlive) clearInterval(window._stKeepAlive);
+        window._stKeepAlive = setInterval(function() {
+            fetch("/_stcore/health").catch(function(){});
+        }, INTERVAL_MS);
+    })();
+    </script>
+    """,
+    height=0,
+)
 
 pg.run()

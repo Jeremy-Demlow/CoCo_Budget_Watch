@@ -4,8 +4,8 @@ import pandas as pd
 from lib.db import (
     run_query, run_ddl, get_users, get_user_budgets, get_config,
     log_audit, clear_caches, FQN, LATENCY_BANNER,
-    get_enforcement_status, restore_access_if_under_budget, user_has_role,
-    grant_user_cortex_access, get_all_users_spend,
+    get_enforcement_status, restore_access_if_under_budget, user_is_blocked,
+    grant_user_cortex_access, get_all_users_spend, user_has_access,
 )
 from lib.time import get_period_bounds
 
@@ -15,7 +15,7 @@ st.markdown(
     "Set per-user credit limits for Cortex Code usage. When a user reaches their "
     "**warning threshold**, they appear as 'WARNING' on the Dashboard. When they "
     "exceed the limit, they show as 'OVER' — and if **Enforcement** is enabled, "
-    "their Cortex AI access is automatically revoked."
+    "their Cortex Code daily credit limits are automatically set to 0 (blocked)."
 )
 
 cfg = get_config()
@@ -142,11 +142,11 @@ with tab_edit:
                         )
                         if budget_increased or reactivated:
                             uname = row.get("USER_NAME", "")
-                            if uname and not user_has_role(uname):
+                            if uname and user_is_blocked(uname):
                                 result = restore_access_if_under_budget(
                                     uname, int(row["USER_ID"]), ps, pe
                                 )
-                                if result["action"] == "grant" and not result.get("error"):
+                                if result["action"] == "unblock" and not result.get("error"):
                                     restored.append(uname)
                     if restored:
                         st.success(f"Access restored for: {', '.join(restored)}")
@@ -213,9 +213,9 @@ with tab_topup:
         enforcement = get_enforcement_status()
         if enforcement["enabled"]:
             selected_user_name = tu_selected.split(" — ")[0]
-            if not user_has_role(selected_user_name):
+            if user_is_blocked(selected_user_name):
                 st.warning(
-                    f"**{selected_user_name}** currently has Cortex AI access **revoked**. "
+                    f"**{selected_user_name}** currently has Cortex Code access **blocked** (daily limits set to 0). "
                     f"If this top-up brings them under budget, access will be automatically restored."
                 )
 
@@ -252,11 +252,11 @@ with tab_topup:
                     result = restore_access_if_under_budget(
                         user_name_for_restore, int(uid), ps, pe
                     )
-                    if result["action"] == "grant" and not result.get("error"):
+                    if result["action"] == "unblock" and not result.get("error"):
                         st.success(
                             f"Access automatically restored — {user_name_for_restore} is now under budget."
                         )
-                    elif result["action"] == "grant" and result.get("error"):
+                    elif result["action"] == "unblock" and result.get("error"):
                         st.warning(f"Tried to restore access but failed: {result['error']}")
 
                 st.rerun()
