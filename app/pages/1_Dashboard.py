@@ -65,9 +65,12 @@ is_current_period = (date_mode == "Current Period")
 
 kpi_placeholder = st.empty()
 with kpi_placeholder.container():
-    cols = st.columns(7)
-    for i, label in enumerate(["Total Credits", "Est. Cost (USD)", "Total Tokens", "Requests", "Active Users", "Avg Credits/Req", "Over Budget"]):
-        cols[i].metric(label, "---")
+    r1 = st.columns(4)
+    for i, label in enumerate(["Total Credits", "Est. Cost (USD)", "Total Tokens", "Requests"]):
+        r1[i].metric(label, "---")
+    r2 = st.columns(4)
+    for i, label in enumerate(["Active Users", "Avg Credits/Req", "Over Budget"]):
+        r2[i].metric(label, "---")
 
 alert_placeholder = st.empty()
 filter_placeholder = st.empty()
@@ -152,7 +155,7 @@ else:
     avg_per_req = 0
 
 with kpi_placeholder.container():
-    k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
+    k1, k2, k3, k4 = st.columns(4)
     k1.metric("Total Credits", f"{total_credits:,.2f}",
               help="Sum of all Cortex Code credits consumed this period, calculated from token-level pricing.")
     k2.metric("Est. Cost (USD)", f"${total_credits * credit_rate:,.2f}",
@@ -161,6 +164,8 @@ with kpi_placeholder.container():
               help="Total tokens processed (input + output + cache). Reflects raw LLM volume.")
     k4.metric("Requests", f"{total_requests:,}",
               help="Number of Cortex Code requests (prompts) sent this period.")
+
+    k5, k6, k7, _ = st.columns(4)
     k5.metric("Active Users", active_count,
               help="Users who have made at least one Cortex Code request this period.")
     k6.metric("Avg Credits/Req", f"{avg_per_req:.4f}",
