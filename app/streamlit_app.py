@@ -3,7 +3,7 @@ import sys, os
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from lib.db import get_session, run_ddl, FQN, LATENCY_BANNER
+from lib.db import get_session, run_ddl, FQN, LATENCY_BANNER, is_local_mode, list_connections, get_active_connection_name, switch_connection
 
 st.set_page_config(
     page_title="CoCo Budgets",
@@ -127,6 +127,25 @@ pg = st.navigation([dashboard, user_budgets, account_budget, enforcement, settin
 with st.sidebar:
     st.title("CoCo Budgets")
     st.caption("Cortex Code Credit Budget Manager")
+
+    if is_local_mode():
+        connections = list_connections()
+        if len(connections) > 1:
+            conn_names = list(connections.keys())
+            current = get_active_connection_name()
+            idx = conn_names.index(current) if current in conn_names else 0
+            selected = st.selectbox(
+                "Account Connection",
+                conn_names,
+                index=idx,
+                format_func=lambda c: f"{c}  ({connections[c]})",
+                help="Switch between Snowflake accounts defined in connections.toml",
+            )
+            if selected != current:
+                switch_connection(selected)
+                st.session_state["_bootstrapped"] = False
+                st.rerun()
+
     st.divider()
     if st.button("🔄 Refresh Data"):
         from lib.db import clear_caches

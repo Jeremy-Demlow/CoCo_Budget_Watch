@@ -3,6 +3,7 @@ import streamlit as st
 import pandas as pd
 
 _SESSION = None
+_ACTIVE_CONNECTION = None
 
 DB = "COCO_BUDGETS_DB"
 SCHEMA = "BUDGETS"
@@ -16,9 +17,9 @@ def _load_connection_config(conn_name: str) -> dict:
         conns = tomllib.load(f)
     cfg = conns.get(conn_name, {})
     params = dict(cfg)
-    if "private_key_path" in params:
+    if "private_key_path" in params or "private_key_file" in params:
         from cryptography.hazmat.primitives import serialization
-        key_path = os.path.expanduser(params.pop("private_key_path"))
+        key_path = os.path.expanduser(params.pop("private_key_path", params.pop("private_key_file", "")))
         with open(key_path, "rb") as kf:
             p_key = serialization.load_pem_private_key(kf.read(), password=None)
         params["private_key"] = p_key.private_bytes(
@@ -30,8 +31,54 @@ def _load_connection_config(conn_name: str) -> dict:
     return params
 
 
+def is_local_mode() -> bool:
+    try:
+        from snowflake.snowpark.context import get_active_session
+        get_active_session()
+        return False
+    except Exception:
+        return True
+
+
+def list_connections() -> dict[str, str]:
+    try:
+        import tomllib
+        toml_path = os.path.expanduser("~/.snowflake/connections.toml")
+        with open(toml_path, "rb") as f:
+            conns = tomllib.load(f)
+        result = {}
+        for name, cfg in conns.items():
+            if isinstance(cfg, dict) and "account" in cfg:
+                result[name] = cfg.get("account", "")
+        return result
+    except Exception:
+        return {}
+
+
+def get_active_connection_name() -> str:
+    global _ACTIVE_CONNECTION
+    if _ACTIVE_CONNECTION:
+        return _ACTIVE_CONNECTION
+    return os.getenv("SNOWFLAKE_CONNECTION_NAME", "myconnection")
+
+
+def switch_connection(conn_name: str) -> None:
+    global _SESSION, _ACTIVE_CONNECTION
+    if conn_name == _ACTIVE_CONNECTION:
+        return
+    if _SESSION is not None:
+        try:
+            if hasattr(_SESSION, "close"):
+                _SESSION.close()
+        except Exception:
+            pass
+    _SESSION = None
+    _ACTIVE_CONNECTION = conn_name
+    clear_caches()
+
+
 def get_session():
-    global _SESSION
+    global _SESSION, _ACTIVE_CONNECTION
     if _SESSION is not None:
         return _SESSION
     try:
@@ -42,7 +89,8 @@ def get_session():
         pass
     try:
         import snowflake.connector
-        conn_name = os.getenv("SNOWFLAKE_CONNECTION_NAME", "myconnection")
+        conn_name = _ACTIVE_CONNECTION or os.getenv("SNOWFLAKE_CONNECTION_NAME", "myconnection")
+        _ACTIVE_CONNECTION = conn_name
         params = _load_connection_config(conn_name)
         conn = snowflake.connector.connect(**params)
         _SESSION = conn
