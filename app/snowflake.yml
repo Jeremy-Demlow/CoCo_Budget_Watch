@@ -1,0 +1,22 @@
+definition_version: 2
+entities:
+  coco_budgets:
+    type: streamlit
+    identifier:
+      name: COCO_BUDGETS
+      schema: BUDGETS
+      database: COCO_BUDGETS_DB
+    stage: COCO_BUDGETS_DB.BUDGETS.COCO_BUDGETS_STAGE
+    query_warehouse: COMPUTE_WH
+    main_file: streamlit_app.py
+    pages_dir: pages/
+    artifacts:
+      - environment.yml
+      - lib/db.py
+      - lib/time.py
+      - lib/__init__.py
+      - pages/1_Dashboard.py
+      - pages/2_User_Budgets.py
+      - pages/3_Account_Budget.py
+      - pages/4_Settings.py
+      - pages/5_Enforcement.py

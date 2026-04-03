@@ -1,0 +1,11 @@
+name: coco_budgets
+channels:
+  - snowflake
+  - conda-forge
+dependencies:
+  - python=3.11
+  - streamlit>=1.39.0
+  - snowflake-snowpark-python
+  - snowflake-connector-python
+  - altair
+  - pandas

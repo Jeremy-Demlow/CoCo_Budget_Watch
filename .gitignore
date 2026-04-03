@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environments
+.env
+.venv/
+venv/
+ENV/
+*.conda
+*.lock
+
+# Snowflake
+.snowflake/
+connections.toml
+config.toml
+*.p8
+*.pem
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# CoCo internal plans
+.plans/
+output/
+
+# Deploy scripts (use `snow streamlit deploy` instead)
+deploy_sis.py
+
+# Streamlit
+.streamlit/
+
+# Logs
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
