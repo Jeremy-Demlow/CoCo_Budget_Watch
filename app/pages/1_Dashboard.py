@@ -8,7 +8,7 @@ from lib.db import (
     get_usage_by_user, get_daily_trend, get_model_breakdown,
     get_all_users_spend, get_daily_cumulative_spend,
     get_account_budget, FQN, LATENCY_BANNER,
-    get_cache_efficiency, get_output_ratio, get_ai_services_total,
+    get_cache_efficiency, get_output_ratio, get_ai_services_context,
     get_model_token_type_breakdown, get_rolling_24h_spend,
     get_new_user_onboarding,
 )
@@ -66,18 +66,6 @@ pe = p_end.strftime("%Y-%m-%d %H:%M:%S")
 
 is_current_period = (date_mode == "Current Period")
 
-kpi_placeholder = st.empty()
-with kpi_placeholder.container():
-    r1 = st.columns(4)
-    for i, label in enumerate(["Total Credits", "Est. Cost (USD)", "Total Tokens", "Requests"]):
-        r1[i].metric(label, "---")
-    r2 = st.columns(4)
-    for i, label in enumerate(["Active Users", "Avg Credits/Req", "Over Budget"]):
-        r2[i].metric(label, "---")
-
-alert_placeholder = st.empty()
-filter_placeholder = st.empty()
-
 with st.spinner("Loading usage data..."):
     if is_current_period:
         budget_df = get_all_users_spend(ps, pe)
@@ -90,9 +78,6 @@ has_budgets = not budget_df.empty
 has_usage = not active_users_df.empty
 
 if not has_budgets and not has_usage:
-    kpi_placeholder.empty()
-    alert_placeholder.empty()
-    filter_placeholder.empty()
     if is_current_period:
         st.info(
             "**Welcome to CoCo Budgets!** This app monitors and controls Cortex Code "
@@ -107,36 +92,34 @@ if not has_budgets and not has_usage:
         st.info("No usage data found for the selected date range.")
     st.stop()
 
-with alert_placeholder.container():
-    if not has_budgets and has_usage and is_current_period:
-        st.warning(
-            "**Users are spending credits but no budgets are configured.** "
-            "Go to **User Budgets** to set limits, or **Account Budget** "
-            "for an account-wide cap."
-        )
-    if not is_current_period:
-        st.info("Viewing historical data. Budget status columns reflect the current period only.")
+if not has_budgets and has_usage and is_current_period:
+    st.warning(
+        "**Users are spending credits but no budgets are configured.** "
+        "Go to **User Budgets** to set limits, or **Account Budget** "
+        "for an account-wide cap."
+    )
+if not is_current_period:
+    st.info("Viewing historical data. Budget status columns reflect the current period only.")
 
-with filter_placeholder.container():
-    filter_col1, filter_col2 = st.columns([3, 2])
-    with filter_col1:
-        user_options = {}
-        if has_usage:
-            for _, r in active_users_df.iterrows():
-                label = f"{r['USER_NAME']} — {r['TOTAL_CREDITS']:.2f} credits"
-                user_options[label] = r["USER_ID"]
-        selected_labels = st.multiselect(
-            "Filter by user",
-            options=list(user_options.keys()),
-            placeholder="All users",
-        )
-    with filter_col2:
-        source_filter = st.multiselect(
-            "Source", ["CLI", "SNOWSIGHT"], default=["CLI", "SNOWSIGHT"],
-            help="CLI = Cortex Code desktop/terminal, SNOWSIGHT = browser-based Cortex Code"
-        )
-        if not source_filter:
-            source_filter = ["CLI", "SNOWSIGHT"]
+filter_col1, filter_col2 = st.columns([3, 2])
+with filter_col1:
+    user_options = {}
+    if has_usage:
+        for _, r in active_users_df.iterrows():
+            label = f"{r['USER_NAME']} — {r['TOTAL_CREDITS']:.2f} credits"
+            user_options[label] = r["USER_ID"]
+    selected_labels = st.multiselect(
+        "Filter by user",
+        options=list(user_options.keys()),
+        placeholder="All users",
+    )
+with filter_col2:
+    source_filter = st.multiselect(
+        "Source", ["CLI", "SNOWSIGHT"], default=["CLI", "SNOWSIGHT"],
+        help="CLI = Cortex Code desktop/terminal, SNOWSIGHT = browser-based Cortex Code"
+    )
+    if not source_filter:
+        source_filter = ["CLI", "SNOWSIGHT"]
 
 selected_user_ids = tuple(user_options[l] for l in selected_labels) if selected_labels else None
 
@@ -157,55 +140,57 @@ else:
     active_count = 0
     avg_per_req = 0
 
-with kpi_placeholder.container():
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Total Credits", f"{total_credits:,.2f}",
-              help="Sum of all Cortex Code credits consumed this period, calculated from token-level pricing.")
-    k2.metric("Est. Cost (USD)", f"${total_credits * credit_rate:,.2f}",
-              help=f"Estimated dollar cost at ${credit_rate:.2f} per credit. Change in Settings.")
-    k3.metric("Total Tokens", f"{total_tokens:,}",
-              help="Total tokens processed (input + output + cache). Reflects raw LLM volume.")
-    k4.metric("Requests", f"{total_requests:,}",
-              help="Number of Cortex Code requests (prompts) sent this period.")
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Total Credits", f"{total_credits:,.2f}",
+          help="Sum of all Cortex Code credits consumed this period, calculated from token-level pricing.")
+k2.metric("Est. Cost (USD)", f"${total_credits * credit_rate:,.2f}",
+          help=f"Estimated dollar cost at ${credit_rate:.2f} per credit. Change in Settings.")
+k3.metric("Total Tokens", f"{total_tokens:,}",
+          help="Total tokens processed (input + output + cache). Reflects raw LLM volume.")
+k4.metric("Requests", f"{total_requests:,}",
+          help="Number of Cortex Code requests (prompts) sent this period.")
 
-    k5, k6, k7, k8 = st.columns(4)
-    k5.metric("Active Users", active_count,
-              help="Users who have made at least one Cortex Code request this period.")
-    k6.metric("Avg Credits/Req", f"{avg_per_req:.4f}",
-              help="Average credit cost per request. Higher values may indicate expensive model usage.")
+k5, k6, k7, k8 = st.columns(4)
+k5.metric("Active Users", active_count,
+          help="Users who have made at least one Cortex Code request this period.")
+k6.metric("Avg Credits/Req", f"{avg_per_req:.4f}",
+          help="Average credit cost per request. Higher values may indicate expensive model usage.")
 
-    if has_budgets:
-        over_count = int((budget_df["STATUS"] == "OVER").sum())
-        k7.metric("Over Budget", over_count, delta=None,
-                  delta_color="inverse" if over_count > 0 else "off",
-                  help="Users whose spending exceeds their budget limit.")
-    else:
-        k7.metric("Over Budget", "—" if is_current_period else "N/A",
-                  help="No budgets configured." if is_current_period else "Budget status only available for current period.")
+if has_budgets:
+    over_count = int((budget_df["STATUS"] == "OVER").sum())
+    k7.metric("Over Budget", over_count, delta=None,
+              delta_color="inverse" if over_count > 0 else "off",
+              help="Users whose spending exceeds their budget limit.")
+else:
+    k7.metric("Over Budget", "—" if is_current_period else "N/A",
+              help="No budgets configured." if is_current_period else "Budget status only available for current period.")
 
-    if is_current_period and total_credits > 0:
-        now = datetime.now(p_start.tzinfo) if p_start.tzinfo else datetime.now()
-        days_elapsed = max((now - p_start).days, 1)
-        days_in_month = (p_end - p_start).days or 30
-        projected = total_credits / days_elapsed * days_in_month
-        k8.metric("Projected Monthly", f"{projected:,.2f} cr",
-                  help=f"Projected spend: {total_credits:.2f} credits over {days_elapsed} days → {days_in_month}-day projection.")
-    else:
-        k8.metric("Projected Monthly", "—",
-                  help="Available for current period only.")
+if is_current_period and total_credits > 0:
+    now = datetime.now(p_start.tzinfo) if p_start.tzinfo else datetime.now()
+    days_elapsed = max((now - p_start).days, 1)
+    days_in_month = (p_end - p_start).days or 30
+    projected = total_credits / days_elapsed * days_in_month
+    k8.metric("Projected Monthly", f"{projected:,.2f} cr",
+              help=f"Projected spend: {total_credits:.2f} credits over {days_elapsed} days → {days_in_month}-day projection.")
+else:
+    k8.metric("Projected Monthly", "—",
+              help="Available for current period only.")
 
-    if is_current_period:
-        try:
-            ai_total = get_ai_services_total()
-            if ai_total > 0:
-                coco_pct = (total_credits / ai_total * 100) if ai_total > 0 else 0
-                ai1, ai2, ai3, _ = st.columns(4)
-                ai1.metric("AI Services Total (MTD)", f"{ai_total:,.2f} cr",
-                           help="Total AI_SERVICES credits from METERING_DAILY_HISTORY this month.")
-                ai2.metric("CoCo % of AI Spend", f"{coco_pct:.1f}%",
-                           help="Cortex Code as a percentage of all AI Services spending.")
-        except Exception:
-            pass
+if is_current_period:
+    try:
+        ai_ctx = get_ai_services_context()
+        if ai_ctx["total"] > 0:
+            coco_metered = ai_ctx["coco"]
+            coco_pct = (coco_metered / ai_ctx["total"] * 100)
+            ai1, ai2, ai3, _ = st.columns(4)
+            ai1.metric("Total AI Credits (MTD)", f"{ai_ctx['total']:,.2f} cr",
+                       help="All AI-related service credits (AI_SERVICES + Cortex Code + Cortex Agents) from METERING_DAILY_HISTORY.")
+            ai2.metric("CoCo % of AI Spend", f"{coco_pct:.1f}%",
+                       help="Cortex Code (CLI + Snowsight) as a percentage of all AI service credits. Both from METERING_DAILY_HISTORY.")
+            ai3.metric("CoCo Credits (Metered)", f"{coco_metered:,.2f} cr",
+                       help="Cortex Code credits from METERING_DAILY_HISTORY. May differ slightly from token-level calculation above.")
+    except Exception:
+        pass
 
 if has_budgets:
     over_count = int((budget_df["STATUS"] == "OVER").sum())
@@ -229,7 +214,9 @@ if is_current_period:
     tabs_list += ["All Users & Spend", "Budget Status"]
 tabs = st.tabs(tabs_list)
 
-with tabs[0]:
+
+@st.fragment
+def render_by_user_tab():
     st.caption("Credit usage broken down by user and source (CLI vs Snowsight).")
     with st.spinner("Loading user breakdown..."):
         usage_df = get_usage_by_user(ps, pe, selected_user_ids)
@@ -273,7 +260,9 @@ with tabs[0]:
     else:
         st.info("No usage data for the selected filters.")
 
-with tabs[1]:
+
+@st.fragment
+def render_by_model_tab():
     st.caption("Which AI models are consuming the most credits? Expensive models drive costs up fast.")
     with st.spinner("Loading model breakdown..."):
         model_df = get_model_breakdown(ps, pe, selected_user_ids)
@@ -362,7 +351,9 @@ with tabs[1]:
     else:
         st.info("No model-level data available.")
 
-with tabs[2]:
+
+@st.fragment
+def render_trends_tab():
     st.caption("Daily credit consumption over time. Use this to spot usage spikes or growing trends.")
     default_days = max(7, min(90, (p_end - p_start).days)) if date_mode != "Current Period" else 30
     trend_days = st.slider("Days back", 7, 365, default_days, key="trend_days")
@@ -450,7 +441,9 @@ with tabs[2]:
     else:
         st.info("No onboarding data available.")
 
-with tabs[3]:
+
+@st.fragment
+def render_efficiency_tab():
     st.caption(
         "Cache efficiency and output ratios reveal optimization opportunities. "
         "Multi-turn sessions in the same context can save ~50% on input costs."
@@ -459,7 +452,7 @@ with tabs[3]:
     with eff_col1:
         st.subheader("Cache Efficiency")
         st.caption(
-            "Higher cache hit % = better session reuse. Target \u2265 70%. "
+            "Higher cache hit % = better session reuse. Target ≥ 70%. "
             "Low cache hit indicates session churn (many short sessions instead of long multi-turn ones)."
         )
         with st.spinner("Loading cache efficiency..."):
@@ -492,8 +485,8 @@ with tabs[3]:
     with eff_col2:
         st.subheader("Output/Input Ratio")
         st.caption(
-            "Output tokens cost 5-8x more than input. Ratio > 3.0 = HIGH cost flag. "
-            "Users with high ratios may benefit from more targeted prompts."
+            "Output tokens cost 5-8x more than input. Ratio = output / (input + cache_read). "
+            "Ratio > 3.0 = HIGH cost flag. High ratios mean the model is generating much more than it receives."
         )
         with st.spinner("Loading output ratio..."):
             ratio_df = get_output_ratio(ps, pe, selected_user_ids)
@@ -522,7 +515,9 @@ with tabs[3]:
         else:
             st.info("Not enough data for ratio analysis (min 5 requests per user).")
 
-with tabs[4]:
+
+@st.fragment
+def render_rolling_24h_tab():
     st.caption(
         "Spend in the last 24 hours per user, compared against daily credit limits. "
         "Bridges the gap between period budgets and native rolling 24h enforcement."
@@ -550,144 +545,169 @@ with tabs[4]:
     else:
         st.info("No usage in the last 24 hours.")
 
+
+@st.fragment
+def render_all_users_tab():
+    st.caption(
+        "Every user in the account with their current spending, budget, and status. "
+        "Users without budgets show as 'NO BUDGET' — go to **User Budgets** to assign limits."
+    )
+    all_spend_df = get_all_users_spend(ps, pe)
+    if not all_spend_df.empty:
+        over_users = all_spend_df[all_spend_df["STATUS"] == "OVER"]
+        warn_users = all_spend_df[all_spend_df["STATUS"] == "WARNING"]
+        no_budget_with_usage = all_spend_df[
+            (all_spend_df["STATUS"] == "NO BUDGET") & (all_spend_df["TOTAL_USED"] > 0)
+        ]
+
+        if not over_users.empty:
+            names = ", ".join(over_users["USER_NAME"].tolist())
+            st.error(f"**Over budget:** {names}")
+        if not warn_users.empty:
+            names = ", ".join(warn_users["USER_NAME"].tolist())
+            st.warning(f"**Approaching budget:** {names}")
+        if not no_budget_with_usage.empty:
+            st.info(
+                f"**{len(no_budget_with_usage)} user(s)** have usage but no budget configured. "
+                f"Go to **User Budgets** to set them up."
+            )
+
+        display_cols = [
+            "USER_NAME", "EMAIL", "TOTAL_USED", "REQUESTS",
+            "EFFECTIVE_BUDGET", "REMAINING", "PCT_USED", "STATUS",
+        ]
+        available_cols = [c for c in display_cols if c in all_spend_df.columns]
+
+        display_df = all_spend_df[available_cols].copy()
+        display_df["EFFECTIVE_BUDGET"] = display_df["EFFECTIVE_BUDGET"].apply(
+            lambda x: x if pd.notna(x) and x > 0 else None
+        )
+        display_df["REMAINING"] = display_df.apply(
+            lambda r: r["REMAINING"] if r["STATUS"] != "NO BUDGET" else None, axis=1
+        )
+        display_df["PCT_USED"] = display_df.apply(
+            lambda r: r["PCT_USED"] if r["STATUS"] != "NO BUDGET" else None, axis=1
+        )
+
+        st.dataframe(
+            display_df,
+            use_container_width=True, hide_index=True, height=500,
+            column_config={
+                "USER_NAME": st.column_config.TextColumn("User"),
+                "EMAIL": st.column_config.TextColumn("Email"),
+                "TOTAL_USED": st.column_config.NumberColumn("Credits Used", format="%.4f",
+                    help="Credits consumed this period based on token-level pricing."),
+                "REQUESTS": st.column_config.NumberColumn("Requests", format="%d"),
+                "EFFECTIVE_BUDGET": st.column_config.NumberColumn("Budget", format="%.2f",
+                    help="Base budget + any top-ups for this period."),
+                "REMAINING": st.column_config.NumberColumn("Remaining", format="%.2f"),
+                "PCT_USED": st.column_config.ProgressColumn(
+                    "% Used", min_value=0, max_value=100, format="%.1f%%"
+                ),
+                "STATUS": st.column_config.TextColumn("Status",
+                    help="OK = under budget, WARNING = past threshold, OVER = exceeded, NO BUDGET = no limit set."),
+            },
+        )
+
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Total Users", len(all_spend_df))
+        s2.metric("With Budgets", int((all_spend_df["STATUS"] != "NO BUDGET").sum()))
+        s3.metric("Over Budget", len(over_users))
+        s4.metric("No Budget (active)", len(no_budget_with_usage))
+    else:
+        st.info("No user data available.")
+
+
+@st.fragment
+def render_budget_status_tab():
+    st.caption(
+        "Users who have budgets assigned. Shows budget vs. actual spending this period. "
+        "Configure budgets on the **User Budgets** page."
+    )
+    if not budget_df.empty:
+        display_cols = [
+            "USER_NAME", "EFFECTIVE_BUDGET", "TOTAL_USED",
+            "REMAINING", "PCT_USED", "STATUS",
+        ]
+        available_cols = [c for c in display_cols if c in budget_df.columns]
+        st.dataframe(
+            budget_df[available_cols],
+            use_container_width=True, hide_index=True,
+            column_config={
+                "PCT_USED": st.column_config.ProgressColumn(
+                    "% Used", min_value=0, max_value=100, format="%d%%"
+                ),
+                "STATUS": st.column_config.TextColumn("Status"),
+            },
+        )
+
+        st.divider()
+        st.subheader("Cumulative Spend vs. Account Budget")
+        with st.spinner("Loading spend trend..."):
+            cum_df = get_daily_cumulative_spend(ps, pe)
+        if not cum_df.empty:
+            acct_b = get_account_budget()
+            total_user_budget = budget_df["EFFECTIVE_BUDGET"].sum()
+            acct_limit = float(acct_b.iloc[0]["BASE_PERIOD_CREDITS"]) if not acct_b.empty else 0.0
+            budget_line_val = acct_limit if acct_limit > 0 else total_user_budget
+
+            spend_chart = (
+                alt.Chart(cum_df)
+                .mark_area(opacity=0.3, line=True, color="#1f77b4")
+                .encode(
+                    x=alt.X("USAGE_DATE:T", title="Date"),
+                    y=alt.Y("CUMULATIVE_CREDITS:Q", title="Credits"),
+                    tooltip=[
+                        "USAGE_DATE:T",
+                        alt.Tooltip("DAILY_CREDITS:Q", format=",.4f", title="Daily"),
+                        alt.Tooltip("CUMULATIVE_CREDITS:Q", format=",.4f", title="Cumulative"),
+                    ],
+                )
+            )
+
+            if budget_line_val > 0:
+                budget_rule = (
+                    alt.Chart(pd.DataFrame({"y": [budget_line_val]}))
+                    .mark_rule(strokeDash=[5, 5], color="red", strokeWidth=2)
+                    .encode(y="y:Q")
+                )
+                budget_text = (
+                    alt.Chart(pd.DataFrame({
+                        "y": [budget_line_val],
+                        "label": [f"Budget: {budget_line_val:,.2f}"]
+                    }))
+                    .mark_text(align="right", dx=-5, dy=-8, color="red", fontSize=12)
+                    .encode(y="y:Q", text="label:N")
+                )
+                combined = (spend_chart + budget_rule + budget_text).properties(height=280)
+            else:
+                combined = spend_chart.properties(height=280)
+
+            st.altair_chart(combined, use_container_width=True)
+        else:
+            st.info("No daily usage data available for trend chart.")
+    else:
+        st.info("No user budgets configured yet. Go to **User Budgets** to add some.")
+
+
+with tabs[0]:
+    render_by_user_tab()
+
+with tabs[1]:
+    render_by_model_tab()
+
+with tabs[2]:
+    render_trends_tab()
+
+with tabs[3]:
+    render_efficiency_tab()
+
+with tabs[4]:
+    render_rolling_24h_tab()
+
 if is_current_period:
     with tabs[5]:
-        st.caption(
-            "Every user in the account with their current spending, budget, and status. "
-            "Users without budgets show as 'NO BUDGET' — go to **User Budgets** to assign limits."
-        )
-        with st.spinner("Loading all users..."):
-            all_spend_df = get_all_users_spend(ps, pe)
-        if not all_spend_df.empty:
-            over_users = all_spend_df[all_spend_df["STATUS"] == "OVER"]
-            warn_users = all_spend_df[all_spend_df["STATUS"] == "WARNING"]
-            no_budget_with_usage = all_spend_df[
-                (all_spend_df["STATUS"] == "NO BUDGET") & (all_spend_df["TOTAL_USED"] > 0)
-            ]
-
-            if not over_users.empty:
-                names = ", ".join(over_users["USER_NAME"].tolist())
-                st.error(f"**Over budget:** {names}")
-            if not warn_users.empty:
-                names = ", ".join(warn_users["USER_NAME"].tolist())
-                st.warning(f"**Approaching budget:** {names}")
-            if not no_budget_with_usage.empty:
-                st.info(
-                    f"**{len(no_budget_with_usage)} user(s)** have usage but no budget configured. "
-                    f"Go to **User Budgets** to set them up."
-                )
-
-            display_cols = [
-                "USER_NAME", "EMAIL", "TOTAL_USED", "REQUESTS",
-                "EFFECTIVE_BUDGET", "REMAINING", "PCT_USED", "STATUS",
-            ]
-            available_cols = [c for c in display_cols if c in all_spend_df.columns]
-
-            display_df = all_spend_df[available_cols].copy()
-            display_df["EFFECTIVE_BUDGET"] = display_df["EFFECTIVE_BUDGET"].apply(
-                lambda x: x if pd.notna(x) and x > 0 else None
-            )
-            display_df["REMAINING"] = display_df.apply(
-                lambda r: r["REMAINING"] if r["STATUS"] != "NO BUDGET" else None, axis=1
-            )
-            display_df["PCT_USED"] = display_df.apply(
-                lambda r: r["PCT_USED"] if r["STATUS"] != "NO BUDGET" else None, axis=1
-            )
-
-            st.dataframe(
-                display_df,
-                use_container_width=True, hide_index=True, height=500,
-                column_config={
-                    "USER_NAME": st.column_config.TextColumn("User"),
-                    "EMAIL": st.column_config.TextColumn("Email"),
-                    "TOTAL_USED": st.column_config.NumberColumn("Credits Used", format="%.4f",
-                        help="Credits consumed this period based on token-level pricing."),
-                    "REQUESTS": st.column_config.NumberColumn("Requests", format="%d"),
-                    "EFFECTIVE_BUDGET": st.column_config.NumberColumn("Budget", format="%.2f",
-                        help="Base budget + any top-ups for this period."),
-                    "REMAINING": st.column_config.NumberColumn("Remaining", format="%.2f"),
-                    "PCT_USED": st.column_config.ProgressColumn(
-                        "% Used", min_value=0, max_value=100, format="%.1f%%"
-                    ),
-                    "STATUS": st.column_config.TextColumn("Status",
-                        help="OK = under budget, WARNING = past threshold, OVER = exceeded, NO BUDGET = no limit set."),
-                },
-            )
-
-            s1, s2, s3, s4 = st.columns(4)
-            s1.metric("Total Users", len(all_spend_df))
-            s2.metric("With Budgets", int((all_spend_df["STATUS"] != "NO BUDGET").sum()))
-            s3.metric("Over Budget", len(over_users))
-            s4.metric("No Budget (active)", len(no_budget_with_usage))
-        else:
-            st.info("No user data available.")
+        render_all_users_tab()
 
     with tabs[6]:
-        st.caption(
-            "Users who have budgets assigned. Shows budget vs. actual spending this period. "
-            "Configure budgets on the **User Budgets** page."
-        )
-        if not budget_df.empty:
-            display_cols = [
-                "USER_NAME", "EFFECTIVE_BUDGET", "TOTAL_USED",
-                "REMAINING", "PCT_USED", "STATUS",
-            ]
-            available_cols = [c for c in display_cols if c in budget_df.columns]
-            st.dataframe(
-                budget_df[available_cols],
-                use_container_width=True, hide_index=True,
-                column_config={
-                    "PCT_USED": st.column_config.ProgressColumn(
-                        "% Used", min_value=0, max_value=100, format="%d%%"
-                    ),
-                    "STATUS": st.column_config.TextColumn("Status"),
-                },
-            )
-
-            st.divider()
-            st.subheader("Cumulative Spend vs. Account Budget")
-            with st.spinner("Loading spend trend..."):
-                cum_df = get_daily_cumulative_spend(ps, pe)
-            if not cum_df.empty:
-                acct_b = get_account_budget()
-                total_user_budget = budget_df["EFFECTIVE_BUDGET"].sum()
-                acct_limit = float(acct_b.iloc[0]["BASE_PERIOD_CREDITS"]) if not acct_b.empty else 0.0
-                budget_line_val = acct_limit if acct_limit > 0 else total_user_budget
-
-                spend_chart = (
-                    alt.Chart(cum_df)
-                    .mark_area(opacity=0.3, line=True, color="#1f77b4")
-                    .encode(
-                        x=alt.X("USAGE_DATE:T", title="Date"),
-                        y=alt.Y("CUMULATIVE_CREDITS:Q", title="Credits"),
-                        tooltip=[
-                            "USAGE_DATE:T",
-                            alt.Tooltip("DAILY_CREDITS:Q", format=",.4f", title="Daily"),
-                            alt.Tooltip("CUMULATIVE_CREDITS:Q", format=",.4f", title="Cumulative"),
-                        ],
-                    )
-                )
-
-                if budget_line_val > 0:
-                    budget_rule = (
-                        alt.Chart(pd.DataFrame({"y": [budget_line_val]}))
-                        .mark_rule(strokeDash=[5, 5], color="red", strokeWidth=2)
-                        .encode(y="y:Q")
-                    )
-                    budget_text = (
-                        alt.Chart(pd.DataFrame({
-                            "y": [budget_line_val],
-                            "label": [f"Budget: {budget_line_val:,.2f}"]
-                        }))
-                        .mark_text(align="right", dx=-5, dy=-8, color="red", fontSize=12)
-                        .encode(y="y:Q", text="label:N")
-                    )
-                    combined = (spend_chart + budget_rule + budget_text).properties(height=280)
-                else:
-                    combined = spend_chart.properties(height=280)
-
-                st.altair_chart(combined, use_container_width=True)
-            else:
-                st.info("No daily usage data available for trend chart.")
-        else:
-            st.info("No user budgets configured yet. Go to **User Budgets** to add some.")
+        render_budget_status_tab()

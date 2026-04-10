@@ -352,9 +352,9 @@ def get_output_ratio(period_start: str, period_end: str,
     SELECT
         u.NAME AS USER_NAME,
         SUM(f.OUTPUT_TOKENS) AS OUTPUT_TOKENS,
-        SUM(f.INPUT_TOKENS) AS INPUT_TOKENS,
-        CASE WHEN SUM(f.INPUT_TOKENS) > 0
-             THEN ROUND(SUM(f.OUTPUT_TOKENS) / SUM(f.INPUT_TOKENS), 2)
+        SUM(f.INPUT_TOKENS + f.CACHE_READ_TOKENS) AS EFFECTIVE_INPUT_TOKENS,
+        CASE WHEN SUM(f.INPUT_TOKENS + f.CACHE_READ_TOKENS) > 0
+             THEN ROUND(SUM(f.OUTPUT_TOKENS) / SUM(f.INPUT_TOKENS + f.CACHE_READ_TOKENS), 2)
              ELSE 0 END AS OUTPUT_INPUT_RATIO,
         COUNT(DISTINCT f.REQUEST_ID) AS REQUESTS
     FROM flattened f
@@ -364,7 +364,7 @@ def get_output_ratio(period_start: str, period_end: str,
     ORDER BY OUTPUT_INPUT_RATIO DESC
     """
     df, _ = run_query(sql)
-    df = _float_cols(df, ["OUTPUT_TOKENS", "INPUT_TOKENS", "OUTPUT_INPUT_RATIO"])
+    df = _float_cols(df, ["OUTPUT_TOKENS", "EFFECTIVE_INPUT_TOKENS", "OUTPUT_INPUT_RATIO"])
     if not df.empty:
         df["FLAG"] = df["OUTPUT_INPUT_RATIO"].apply(
             lambda x: "HIGH" if x > 3.0 else ("ELEVATED" if x > 2.0 else "NORMAL")
@@ -373,18 +373,24 @@ def get_output_ratio(period_start: str, period_end: str,
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_ai_services_total() -> tuple[float, float]:
+def get_ai_services_context() -> dict:
     sql = """
     SELECT
+        COALESCE(SUM(CASE WHEN SERVICE_TYPE IN ('CORTEX_CODE_CLI','CORTEX_CODE_SNOWSIGHT')
+                      THEN CREDITS_USED ELSE 0 END), 0) AS COCO_CREDITS,
         COALESCE(SUM(CREDITS_USED), 0) AS TOTAL_AI_CREDITS
     FROM SNOWFLAKE.ACCOUNT_USAGE.METERING_DAILY_HISTORY
-    WHERE SERVICE_TYPE = 'AI_SERVICES'
+    WHERE SERVICE_TYPE IN ('AI_SERVICES','CORTEX_CODE_CLI','CORTEX_CODE_SNOWSIGHT','CORTEX_AGENTS')
       AND USAGE_DATE >= DATE_TRUNC('MONTH', CURRENT_DATE())
       AND USAGE_DATE < CURRENT_DATE() + 1
     """
     df, _ = run_query(sql)
-    total = float(df.iloc[0]["TOTAL_AI_CREDITS"]) if not df.empty else 0.0
-    return total
+    if df.empty:
+        return {"coco": 0.0, "total": 0.0}
+    return {
+        "coco": float(df.iloc[0]["COCO_CREDITS"]),
+        "total": float(df.iloc[0]["TOTAL_AI_CREDITS"]),
+    }
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
