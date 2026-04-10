@@ -306,6 +306,160 @@ def get_usage_by_user(period_start: str, period_end: str,
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def get_cache_efficiency(period_start: str, period_end: str,
+                         user_ids: tuple | None = None) -> pd.DataFrame:
+    time_filter = f"AND r.USAGE_TIME >= '{period_start}' AND r.USAGE_TIME < '{period_end}'"
+    if user_ids:
+        ids = ",".join(str(u) for u in user_ids)
+        time_filter += f" AND r.USER_ID IN ({ids})"
+    sql = f"""
+    WITH {_requests_cte()},
+    {_flatten_cte(time_filter)}
+    SELECT
+        u.NAME AS USER_NAME,
+        SUM(f.CACHE_READ_TOKENS) AS CACHE_READ_TOKENS,
+        SUM(f.INPUT_TOKENS) AS INPUT_TOKENS,
+        SUM(f.CACHE_READ_TOKENS + f.INPUT_TOKENS) AS TOTAL_CACHEABLE,
+        CASE WHEN SUM(f.CACHE_READ_TOKENS + f.INPUT_TOKENS) > 0
+             THEN ROUND(SUM(f.CACHE_READ_TOKENS) / SUM(f.CACHE_READ_TOKENS + f.INPUT_TOKENS) * 100, 1)
+             ELSE 0 END AS CACHE_HIT_PCT,
+        COUNT(DISTINCT f.REQUEST_ID) AS REQUESTS
+    FROM flattened f
+    LEFT JOIN SNOWFLAKE.ACCOUNT_USAGE.USERS u ON f.USER_ID = u.USER_ID
+    GROUP BY u.NAME
+    HAVING REQUESTS >= 3
+    ORDER BY CACHE_HIT_PCT DESC
+    """
+    df, _ = run_query(sql)
+    df = _float_cols(df, ["CACHE_READ_TOKENS", "INPUT_TOKENS", "TOTAL_CACHEABLE", "CACHE_HIT_PCT"])
+    if not df.empty:
+        df["HEALTH"] = df["CACHE_HIT_PCT"].apply(
+            lambda x: "GOOD" if x >= 70 else ("FAIR" if x >= 50 else "LOW")
+        )
+    return df
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_output_ratio(period_start: str, period_end: str,
+                     user_ids: tuple | None = None) -> pd.DataFrame:
+    time_filter = f"AND r.USAGE_TIME >= '{period_start}' AND r.USAGE_TIME < '{period_end}'"
+    if user_ids:
+        ids = ",".join(str(u) for u in user_ids)
+        time_filter += f" AND r.USER_ID IN ({ids})"
+    sql = f"""
+    WITH {_requests_cte()},
+    {_flatten_cte(time_filter)}
+    SELECT
+        u.NAME AS USER_NAME,
+        SUM(f.OUTPUT_TOKENS) AS OUTPUT_TOKENS,
+        SUM(f.INPUT_TOKENS) AS INPUT_TOKENS,
+        CASE WHEN SUM(f.INPUT_TOKENS) > 0
+             THEN ROUND(SUM(f.OUTPUT_TOKENS) / SUM(f.INPUT_TOKENS), 2)
+             ELSE 0 END AS OUTPUT_INPUT_RATIO,
+        COUNT(DISTINCT f.REQUEST_ID) AS REQUESTS
+    FROM flattened f
+    LEFT JOIN SNOWFLAKE.ACCOUNT_USAGE.USERS u ON f.USER_ID = u.USER_ID
+    GROUP BY u.NAME
+    HAVING REQUESTS >= 5
+    ORDER BY OUTPUT_INPUT_RATIO DESC
+    """
+    df, _ = run_query(sql)
+    df = _float_cols(df, ["OUTPUT_TOKENS", "INPUT_TOKENS", "OUTPUT_INPUT_RATIO"])
+    if not df.empty:
+        df["FLAG"] = df["OUTPUT_INPUT_RATIO"].apply(
+            lambda x: "HIGH" if x > 3.0 else ("ELEVATED" if x > 2.0 else "NORMAL")
+        )
+    return df
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_ai_services_total() -> tuple[float, float]:
+    sql = """
+    SELECT
+        COALESCE(SUM(CREDITS_USED), 0) AS TOTAL_AI_CREDITS
+    FROM SNOWFLAKE.ACCOUNT_USAGE.METERING_DAILY_HISTORY
+    WHERE SERVICE_TYPE = 'AI_SERVICES'
+      AND USAGE_DATE >= DATE_TRUNC('MONTH', CURRENT_DATE())
+      AND USAGE_DATE < CURRENT_DATE() + 1
+    """
+    df, _ = run_query(sql)
+    total = float(df.iloc[0]["TOTAL_AI_CREDITS"]) if not df.empty else 0.0
+    return total
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_model_token_type_breakdown(period_start: str, period_end: str,
+                                   user_ids: tuple | None = None) -> pd.DataFrame:
+    time_filter = f"AND r.USAGE_TIME >= '{period_start}' AND r.USAGE_TIME < '{period_end}'"
+    if user_ids:
+        ids = ",".join(str(u) for u in user_ids)
+        time_filter += f" AND r.USER_ID IN ({ids})"
+    sql = f"""
+    WITH {_requests_cte()},
+    {_pricing_cte()},
+    {_flatten_cte(time_filter)}
+    SELECT
+        f.MODEL_NAME AS MODEL,
+        SUM(f.INPUT_TOKENS * COALESCE(p.INPUT_RATE, 0) / 1e6) AS INPUT_CREDITS,
+        SUM(f.OUTPUT_TOKENS * COALESCE(p.OUTPUT_RATE, 0) / 1e6) AS OUTPUT_CREDITS,
+        SUM(f.CACHE_WRITE_TOKENS * COALESCE(p.CACHE_WRITE_RATE, 0) / 1e6) AS CACHE_WRITE_CREDITS,
+        SUM(f.CACHE_READ_TOKENS * COALESCE(p.CACHE_READ_RATE, 0) / 1e6) AS CACHE_READ_CREDITS
+    FROM flattened f
+    LEFT JOIN pricing p ON f.MODEL_NAME = p.MODEL_NAME
+    GROUP BY f.MODEL_NAME
+    ORDER BY (INPUT_CREDITS + OUTPUT_CREDITS + CACHE_WRITE_CREDITS + CACHE_READ_CREDITS) DESC
+    """
+    df, _ = run_query(sql)
+    return _float_cols(df, ["INPUT_CREDITS", "OUTPUT_CREDITS", "CACHE_WRITE_CREDITS", "CACHE_READ_CREDITS"])
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_rolling_24h_spend() -> pd.DataFrame:
+    sql = f"""
+    WITH {_requests_cte()},
+    {_pricing_cte()},
+    {_flatten_cte("AND r.USAGE_TIME >= DATEADD('hour', -24, CURRENT_TIMESTAMP())")}
+    SELECT
+        u.NAME AS USER_NAME,
+        {_credits_sum_expr()} AS CREDITS_24H,
+        COUNT(DISTINCT f.REQUEST_ID) AS REQUESTS_24H
+    FROM flattened f
+    LEFT JOIN SNOWFLAKE.ACCOUNT_USAGE.USERS u ON f.USER_ID = u.USER_ID
+    LEFT JOIN pricing p ON f.MODEL_NAME = p.MODEL_NAME
+    GROUP BY u.NAME
+    HAVING CREDITS_24H > 0
+    ORDER BY CREDITS_24H DESC
+    """
+    df, _ = run_query(sql)
+    return _float_cols(df, ["CREDITS_24H"])
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_new_user_onboarding(days: int = 90) -> pd.DataFrame:
+    sql = f"""
+    WITH {_requests_cte()},
+    first_use AS (
+        SELECT
+            r.USER_ID,
+            MIN(r.USAGE_TIME)::DATE AS FIRST_USE_DATE
+        FROM deduped r
+        GROUP BY r.USER_ID
+    )
+    SELECT
+        f.FIRST_USE_DATE,
+        u.NAME AS USER_NAME,
+        COUNT(*) OVER (PARTITION BY f.FIRST_USE_DATE) AS NEW_USERS_DAY,
+        COUNT(*) OVER (ORDER BY f.FIRST_USE_DATE ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS CUMULATIVE_USERS
+    FROM first_use f
+    LEFT JOIN SNOWFLAKE.ACCOUNT_USAGE.USERS u ON f.USER_ID = u.USER_ID
+    WHERE f.FIRST_USE_DATE >= DATEADD('day', -{days}, CURRENT_DATE())
+    ORDER BY f.FIRST_USE_DATE
+    """
+    df, _ = run_query(sql)
+    return df
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_daily_cumulative_spend(period_start: str, period_end: str) -> pd.DataFrame:
     time_filter = f"AND r.USAGE_TIME >= '{period_start}' AND r.USAGE_TIME < '{period_end}'"
     sql = f"""

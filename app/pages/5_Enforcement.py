@@ -540,6 +540,37 @@ Different models have dramatically different costs. For example:
 Use the pricing table below to decide which models to allow.
 """)
 
+    with st.expander("Tiered RBAC governance pattern", expanded=False):
+        st.markdown("""
+A recommended approach for managing model access at scale is to create **tiered database roles**
+that group models by cost level. This allows you to grant different user groups access to
+appropriate model tiers.
+
+| Tier | Role Name | Models Included | Use Case |
+|:---|:---|:---|:---|
+| **Standard** | `CORTEX_CODE_STANDARD` | `openai-gpt-5.2`, `claude-4-sonnet` | Default for all users |
+| **Enhanced** | `CORTEX_CODE_ENHANCED` | Standard + `claude-sonnet-4-5`, `claude-sonnet-4-6` | Power users, approved teams |
+| **Premium** | `CORTEX_CODE_PREMIUM` | Enhanced + `claude-opus-4-5`, `claude-opus-4-6` | By approval only |
+
+**Example SQL to implement tiers:**
+```sql
+-- Create custom roles for each tier
+CREATE ROLE IF NOT EXISTS CORTEX_CODE_STANDARD;
+CREATE ROLE IF NOT EXISTS CORTEX_CODE_ENHANCED;
+CREATE ROLE IF NOT EXISTS CORTEX_CODE_PREMIUM;
+
+-- Assign users to appropriate tiers
+GRANT ROLE CORTEX_CODE_STANDARD TO USER analyst_user;
+GRANT ROLE CORTEX_CODE_ENHANCED TO USER senior_engineer;
+GRANT ROLE CORTEX_CODE_PREMIUM TO USER ml_lead;
+```
+
+**How it works with the Model Allowlist:**
+- Use the allowlist below to set the **account-wide maximum** (e.g., all models allowed)
+- Use roles + row-access policies on internal tables to enforce per-user tier restrictions
+- Combine with daily credit limits for defense-in-depth cost control
+""")
+
     current_list = get_model_allowlist()
     is_all = current_list == ["ALL"]
     is_none = current_list == ["NONE"]

@@ -8,6 +8,9 @@ from lib.db import (
     get_usage_by_user, get_daily_trend, get_model_breakdown,
     get_all_users_spend, get_daily_cumulative_spend,
     get_account_budget, FQN, LATENCY_BANNER,
+    get_cache_efficiency, get_output_ratio, get_ai_services_total,
+    get_model_token_type_breakdown, get_rolling_24h_spend,
+    get_new_user_onboarding,
 )
 from lib.time import get_period_bounds, format_period
 
@@ -165,7 +168,7 @@ with kpi_placeholder.container():
     k4.metric("Requests", f"{total_requests:,}",
               help="Number of Cortex Code requests (prompts) sent this period.")
 
-    k5, k6, k7, _ = st.columns(4)
+    k5, k6, k7, k8 = st.columns(4)
     k5.metric("Active Users", active_count,
               help="Users who have made at least one Cortex Code request this period.")
     k6.metric("Avg Credits/Req", f"{avg_per_req:.4f}",
@@ -179,6 +182,30 @@ with kpi_placeholder.container():
     else:
         k7.metric("Over Budget", "—" if is_current_period else "N/A",
                   help="No budgets configured." if is_current_period else "Budget status only available for current period.")
+
+    if is_current_period and total_credits > 0:
+        now = datetime.now(p_start.tzinfo) if p_start.tzinfo else datetime.now()
+        days_elapsed = max((now - p_start).days, 1)
+        days_in_month = (p_end - p_start).days or 30
+        projected = total_credits / days_elapsed * days_in_month
+        k8.metric("Projected Monthly", f"{projected:,.2f} cr",
+                  help=f"Projected spend: {total_credits:.2f} credits over {days_elapsed} days → {days_in_month}-day projection.")
+    else:
+        k8.metric("Projected Monthly", "—",
+                  help="Available for current period only.")
+
+    if is_current_period:
+        try:
+            ai_total = get_ai_services_total()
+            if ai_total > 0:
+                coco_pct = (total_credits / ai_total * 100) if ai_total > 0 else 0
+                ai1, ai2, ai3, _ = st.columns(4)
+                ai1.metric("AI Services Total (MTD)", f"{ai_total:,.2f} cr",
+                           help="Total AI_SERVICES credits from METERING_DAILY_HISTORY this month.")
+                ai2.metric("CoCo % of AI Spend", f"{coco_pct:.1f}%",
+                           help="Cortex Code as a percentage of all AI Services spending.")
+        except Exception:
+            pass
 
 if has_budgets:
     over_count = int((budget_df["STATUS"] == "OVER").sum())
@@ -197,7 +224,7 @@ if has_budgets:
 
 st.divider()
 
-tabs_list = ["By User", "By Model", "Trends"]
+tabs_list = ["By User", "By Model", "Trends", "Efficiency", "Rolling 24h"]
 if is_current_period:
     tabs_list += ["All Users & Spend", "Budget Status"]
 tabs = st.tabs(tabs_list)
@@ -274,6 +301,36 @@ with tabs[1]:
             .properties(height=300)
         )
         st.altair_chart(model_chart, use_container_width=True)
+
+        st.subheader("Cost by Token Type")
+        st.caption(
+            "Output tokens cost 5-8x more than input tokens. "
+            "This chart shows where model costs actually come from."
+        )
+        with st.spinner("Loading token type breakdown..."):
+            tt_df = get_model_token_type_breakdown(ps, pe, selected_user_ids)
+        if not tt_df.empty:
+            tt_melted = tt_df.melt(
+                id_vars=["MODEL"],
+                value_vars=["INPUT_CREDITS", "OUTPUT_CREDITS", "CACHE_WRITE_CREDITS", "CACHE_READ_CREDITS"],
+                var_name="TOKEN_TYPE", value_name="CREDITS",
+            )
+            tt_melted["TOKEN_TYPE"] = tt_melted["TOKEN_TYPE"].str.replace("_CREDITS", "")
+            type_colors = {"INPUT": "#4e79a7", "OUTPUT": "#e15759", "CACHE_WRITE": "#f28e2b", "CACHE_READ": "#76b7b2"}
+            tt_chart = (
+                alt.Chart(tt_melted)
+                .mark_bar()
+                .encode(
+                    x=alt.X("MODEL:N", sort="-y", title="Model"),
+                    y=alt.Y("CREDITS:Q", title="Credits", stack=True),
+                    color=alt.Color("TOKEN_TYPE:N",
+                        scale=alt.Scale(domain=list(type_colors.keys()), range=list(type_colors.values())),
+                        title="Token Type"),
+                    tooltip=["MODEL", "TOKEN_TYPE", alt.Tooltip("CREDITS:Q", format=",.4f")],
+                )
+                .properties(height=300)
+            )
+            st.altair_chart(tt_chart, use_container_width=True)
 
         user_model = (
             model_df.groupby(["USER_NAME", "MODEL"])
@@ -355,8 +412,146 @@ with tabs[2]:
     else:
         st.info("No trend data available.")
 
+    st.divider()
+    st.subheader("New User Adoption")
+    st.caption("When users first started using Cortex Code. Tracks rollout adoption velocity.")
+    with st.spinner("Loading onboarding data..."):
+        onboard_df = get_new_user_onboarding(trend_days)
+    if not onboard_df.empty:
+        daily_new = onboard_df.drop_duplicates(subset=["FIRST_USE_DATE"]).copy()
+        bar = (
+            alt.Chart(daily_new)
+            .mark_bar(color="#4e79a7", opacity=0.6)
+            .encode(
+                x=alt.X("FIRST_USE_DATE:T", title="Date"),
+                y=alt.Y("NEW_USERS_DAY:Q", title="Users"),
+                tooltip=["FIRST_USE_DATE:T",
+                         alt.Tooltip("NEW_USERS_DAY:Q", title="New Users")],
+            )
+        )
+        line = (
+            alt.Chart(daily_new)
+            .mark_line(color="#e15759", strokeWidth=2)
+            .encode(
+                x=alt.X("FIRST_USE_DATE:T"),
+                y=alt.Y("CUMULATIVE_USERS:Q", title="Cumulative Users"),
+                tooltip=["FIRST_USE_DATE:T",
+                         alt.Tooltip("CUMULATIVE_USERS:Q", title="Cumulative")],
+            )
+        )
+        combined = alt.layer(bar, line).resolve_scale(y="independent").properties(height=250)
+        st.altair_chart(combined, use_container_width=True)
+
+        with st.expander("User first-use dates"):
+            st.dataframe(
+                onboard_df[["USER_NAME", "FIRST_USE_DATE"]].drop_duplicates().sort_values("FIRST_USE_DATE", ascending=False),
+                hide_index=True, use_container_width=True,
+            )
+    else:
+        st.info("No onboarding data available.")
+
+with tabs[3]:
+    st.caption(
+        "Cache efficiency and output ratios reveal optimization opportunities. "
+        "Multi-turn sessions in the same context can save ~50% on input costs."
+    )
+    eff_col1, eff_col2 = st.columns(2)
+    with eff_col1:
+        st.subheader("Cache Efficiency")
+        st.caption(
+            "Higher cache hit % = better session reuse. Target \u2265 70%. "
+            "Low cache hit indicates session churn (many short sessions instead of long multi-turn ones)."
+        )
+        with st.spinner("Loading cache efficiency..."):
+            cache_df = get_cache_efficiency(ps, pe, selected_user_ids)
+        if not cache_df.empty:
+            health_colors = {"GOOD": "#59a14f", "FAIR": "#f28e2b", "LOW": "#e15759"}
+            bars = (
+                alt.Chart(cache_df)
+                .mark_bar()
+                .encode(
+                    y=alt.Y("USER_NAME:N", sort="-x", title="User"),
+                    x=alt.X("CACHE_HIT_PCT:Q", title="Cache Hit %", scale=alt.Scale(domain=[0, 100])),
+                    color=alt.Color("HEALTH:N",
+                        scale=alt.Scale(domain=list(health_colors.keys()), range=list(health_colors.values())),
+                        title="Health"),
+                    tooltip=["USER_NAME", alt.Tooltip("CACHE_HIT_PCT:Q", format=".1f"),
+                             "HEALTH", alt.Tooltip("REQUESTS:Q", format=",")],
+                )
+                .properties(height=max(200, len(cache_df) * 30))
+            )
+            threshold = (
+                alt.Chart(pd.DataFrame({"x": [70]}))
+                .mark_rule(strokeDash=[5, 5], color="red", strokeWidth=2)
+                .encode(x="x:Q")
+            )
+            st.altair_chart(bars + threshold, use_container_width=True)
+        else:
+            st.info("Not enough data for cache efficiency analysis (min 3 requests per user).")
+
+    with eff_col2:
+        st.subheader("Output/Input Ratio")
+        st.caption(
+            "Output tokens cost 5-8x more than input. Ratio > 3.0 = HIGH cost flag. "
+            "Users with high ratios may benefit from more targeted prompts."
+        )
+        with st.spinner("Loading output ratio..."):
+            ratio_df = get_output_ratio(ps, pe, selected_user_ids)
+        if not ratio_df.empty:
+            flag_colors = {"HIGH": "#e15759", "ELEVATED": "#f28e2b", "NORMAL": "#59a14f"}
+            ratio_bars = (
+                alt.Chart(ratio_df)
+                .mark_bar()
+                .encode(
+                    y=alt.Y("USER_NAME:N", sort="-x", title="User"),
+                    x=alt.X("OUTPUT_INPUT_RATIO:Q", title="Output/Input Ratio"),
+                    color=alt.Color("FLAG:N",
+                        scale=alt.Scale(domain=list(flag_colors.keys()), range=list(flag_colors.values())),
+                        title="Flag"),
+                    tooltip=["USER_NAME", alt.Tooltip("OUTPUT_INPUT_RATIO:Q", format=".2f"),
+                             "FLAG", alt.Tooltip("REQUESTS:Q", format=",")],
+                )
+                .properties(height=max(200, len(ratio_df) * 30))
+            )
+            threshold_3 = (
+                alt.Chart(pd.DataFrame({"x": [3.0]}))
+                .mark_rule(strokeDash=[5, 5], color="red", strokeWidth=2)
+                .encode(x="x:Q")
+            )
+            st.altair_chart(ratio_bars + threshold_3, use_container_width=True)
+        else:
+            st.info("Not enough data for ratio analysis (min 5 requests per user).")
+
+with tabs[4]:
+    st.caption(
+        "Spend in the last 24 hours per user, compared against daily credit limits. "
+        "Bridges the gap between period budgets and native rolling 24h enforcement."
+    )
+    with st.spinner("Loading rolling 24h spend..."):
+        r24_df = get_rolling_24h_spend()
+    if not r24_df.empty:
+        r24_chart = (
+            alt.Chart(r24_df)
+            .mark_bar(color="#4e79a7")
+            .encode(
+                x=alt.X("USER_NAME:N", sort="-y", title="User"),
+                y=alt.Y("CREDITS_24H:Q", title="Credits (24h)"),
+                tooltip=["USER_NAME",
+                         alt.Tooltip("CREDITS_24H:Q", format=",.4f"),
+                         alt.Tooltip("REQUESTS_24H:Q", format=",")],
+            )
+            .properties(height=300)
+        )
+        st.altair_chart(r24_chart, use_container_width=True)
+        st.dataframe(
+            r24_df.style.format({"CREDITS_24H": "{:,.4f}", "REQUESTS_24H": "{:,}"}),
+            hide_index=True, use_container_width=True,
+        )
+    else:
+        st.info("No usage in the last 24 hours.")
+
 if is_current_period:
-    with tabs[3]:
+    with tabs[5]:
         st.caption(
             "Every user in the account with their current spending, budget, and status. "
             "Users without budgets show as 'NO BUDGET' — go to **User Budgets** to assign limits."
@@ -427,7 +622,7 @@ if is_current_period:
         else:
             st.info("No user data available.")
 
-    with tabs[4]:
+    with tabs[6]:
         st.caption(
             "Users who have budgets assigned. Shows budget vs. actual spending this period. "
             "Configure budgets on the **User Budgets** page."
