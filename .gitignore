@@ -45,3 +45,4 @@ deploy_sis.py
 
 # Jupyter
 .ipynb_checkpoints/
+.cortex/
