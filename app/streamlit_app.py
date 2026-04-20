@@ -4,7 +4,13 @@ from streamlit.components.v1 import html as st_html
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from lib.db import get_session, run_ddl, FQN, LATENCY_BANNER, is_local_mode, list_connections, get_active_connection_name, switch_connection
+from lib.connection import (
+    get_session, run_ddl, FQN, is_local_mode, list_connections,
+    get_active_connection_name, switch_connection,
+    get_current_role, get_available_roles, use_role,
+    get_connection_error,
+)
+from lib.config import LATENCY_BANNER
 
 st.set_page_config(
     page_title="CoCo Budgets",
@@ -86,6 +92,43 @@ BOOTSTRAP_DDLS = [
         SENT_AT TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP(),
         CONSTRAINT UQ_ALERT UNIQUE (USER_ID, ALERT_TYPE, PERIOD_KEY)
     )""",
+    f"""CREATE TABLE IF NOT EXISTS {FQN}.COST_CENTER_TAGS (
+        TAG_ID NUMBER AUTOINCREMENT,
+        TAG_DB VARCHAR NOT NULL DEFAULT 'COCO_BUDGETS_DB',
+        TAG_SCHEMA VARCHAR NOT NULL DEFAULT 'BUDGETS',
+        TAG_NAME VARCHAR NOT NULL DEFAULT 'COST_CENTER',
+        TAG_VALUE VARCHAR NOT NULL,
+        DESCRIPTION VARCHAR,
+        CREATED_AT TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP(),
+        CREATED_BY VARCHAR DEFAULT CURRENT_USER(),
+        PRIMARY KEY (TAG_ID),
+        UNIQUE (TAG_DB, TAG_SCHEMA, TAG_NAME, TAG_VALUE)
+    )""",
+    f"""CREATE TABLE IF NOT EXISTS {FQN}.USER_TAG_ASSIGNMENTS (
+        ASSIGNMENT_ID NUMBER AUTOINCREMENT,
+        USER_ID NUMBER NOT NULL,
+        USER_NAME VARCHAR NOT NULL,
+        TAG_DB VARCHAR NOT NULL,
+        TAG_SCHEMA VARCHAR NOT NULL,
+        TAG_NAME VARCHAR NOT NULL,
+        TAG_VALUE VARCHAR,
+        ACTION VARCHAR NOT NULL DEFAULT 'SET',
+        ASSIGNED_AT TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP(),
+        ASSIGNED_BY VARCHAR DEFAULT CURRENT_USER(),
+        PRIMARY KEY (ASSIGNMENT_ID)
+    )""",
+    f"""CREATE TABLE IF NOT EXISTS {FQN}.SNOWFLAKE_BUDGET_REGISTRY (
+        BUDGET_ID NUMBER AUTOINCREMENT,
+        BUDGET_DB VARCHAR NOT NULL DEFAULT 'COCO_BUDGETS_DB',
+        BUDGET_SCHEMA VARCHAR NOT NULL DEFAULT 'BUDGETS',
+        BUDGET_NAME VARCHAR NOT NULL,
+        CREDIT_QUOTA NUMBER(20,6) NOT NULL,
+        DESCRIPTION VARCHAR,
+        CREATED_AT TIMESTAMP_TZ DEFAULT CURRENT_TIMESTAMP(),
+        CREATED_BY VARCHAR DEFAULT CURRENT_USER(),
+        PRIMARY KEY (BUDGET_ID),
+        UNIQUE (BUDGET_DB, BUDGET_SCHEMA, BUDGET_NAME)
+    )""",
     f"""MERGE INTO {FQN}.BUDGET_CONFIG tgt
     USING (SELECT * FROM VALUES
         ('BUDGET_TIMEZONE','UTC'),('DEFAULT_PERIOD_TYPE','MONTHLY'),
@@ -96,7 +139,8 @@ BOOTSTRAP_DDLS = [
         ('EMAIL_INTEGRATION','MY_EMAIL_INT'),('ALERT_RECIPIENTS',''),
         ('ALERT_ON_WARNING','true'),('ALERT_ON_OVER','true'),
         ('CREDIT_RATE_USD','2.00'),
-        ('SLACK_ENABLED','false'),('SLACK_WEBHOOK_URL','')
+        ('SLACK_ENABLED','false'),('SLACK_WEBHOOK_URL',''),
+        ('DEFAULT_NATIVE_BUDGET_QUOTA','1000')
     ) AS src(CONFIG_KEY, CONFIG_VALUE)
     ON tgt.CONFIG_KEY = src.CONFIG_KEY
     WHEN NOT MATCHED THEN INSERT (CONFIG_KEY, CONFIG_VALUE, UPDATED_AT)
@@ -106,33 +150,43 @@ BOOTSTRAP_DDLS = [
 
 def bootstrap():
     if st.session_state.get("_bootstrapped"):
-        return
-    get_session()
+        return True
+    session = get_session()
+    if session is None:
+        return False
+    errors = []
     for ddl in BOOTSTRAP_DDLS:
         err = run_ddl(ddl)
         if err:
-            st.error(f"Bootstrap error: {err}")
-            st.stop()
+            errors.append(err)
+    if errors:
+        st.session_state["_bootstrap_errors"] = errors
+        return False
     st.session_state["_bootstrapped"] = True
+    st.session_state.pop("_bootstrap_errors", None)
+    return True
 
 
-bootstrap()
+boot_ok = bootstrap()
 
 dashboard = st.Page("pages/1_Dashboard.py", title="Dashboard", icon="📊", default=True)
 user_budgets = st.Page("pages/2_User_Budgets.py", title="User Budgets", icon="👤")
 account_budget = st.Page("pages/3_Account_Budget.py", title="Account Budget", icon="🏢")
 enforcement = st.Page("pages/5_Enforcement.py", title="Enforcement & Controls", icon="🛡️")
+ai_budgets = st.Page("pages/6_AI_Budgets.py", title="AI Budgets (Native)", icon="🏷️")
 settings = st.Page("pages/4_Settings.py", title="Settings", icon="⚙️")
 
-pg = st.navigation([dashboard, user_budgets, account_budget, enforcement, settings])
+pg = st.navigation([dashboard, user_budgets, account_budget, enforcement, ai_budgets, settings])
 
 with st.sidebar:
     st.title("CoCo Budgets")
     st.caption("Cortex Code Credit Budget Manager")
 
+    conn_err = get_connection_error()
+
     if is_local_mode():
         connections = list_connections()
-        if len(connections) > 1:
+        if len(connections) >= 1:
             conn_names = list(connections.keys())
             current = get_active_connection_name()
             idx = conn_names.index(current) if current in conn_names else 0
@@ -146,11 +200,52 @@ with st.sidebar:
             if selected != current:
                 switch_connection(selected)
                 st.session_state["_bootstrapped"] = False
+                st.session_state.pop("_available_roles", None)
                 st.rerun()
+
+    if conn_err:
+        st.error(f"Connection failed: {conn_err}")
+        st.info("Switch to a different connection above.")
+    else:
+        current_role = get_current_role()
+        if current_role == "UNKNOWN":
+            st.session_state.pop("_bootstrapped", None)
+            st.session_state.pop("_available_roles", None)
+            st.warning("Could not detect current role — connection may have dropped. Click Refresh Data to reconnect.")
+        else:
+            if "_available_roles" not in st.session_state:
+                st.session_state["_available_roles"] = get_available_roles()
+            roles = st.session_state["_available_roles"]
+            if roles:
+                idx = roles.index(current_role) if current_role in roles else 0
+                selected_role = st.selectbox(
+                    "Role",
+                    roles,
+                    index=idx,
+                    help="Switch your active Snowflake role. COCO_BUDGETS_OWNER or ACCOUNTADMIN recommended.",
+                )
+                if selected_role != current_role:
+                    err = use_role(selected_role)
+                    if err:
+                        st.error(f"Cannot switch role: {err}")
+                    else:
+                        st.session_state["_bootstrapped"] = False
+                        st.session_state.pop("_available_roles", None)
+                        st.rerun()
+            if not boot_ok:
+                boot_errors = st.session_state.get("_bootstrap_errors", [])
+                with st.expander(f"⚠️ Bootstrap incomplete — role {current_role}", expanded=True):
+                    st.warning(
+                        "Some setup steps failed. Switch to **COCO_BUDGETS_OWNER** or **ACCOUNTADMIN** "
+                        "to create the budget database and tables, then click **Refresh Data**."
+                    )
+                    if boot_errors:
+                        for e in boot_errors[:3]:
+                            st.caption(f"• {e}")
 
     st.divider()
     if st.button("🔄 Refresh Data"):
-        from lib.db import clear_caches
+        from lib.config import clear_caches
         clear_caches()
         st.rerun()
 
@@ -169,6 +264,10 @@ credit spending across your Snowflake account.
 - **Enforcement** — Automatically block Cortex Code access
   when a user exceeds their budget using Snowflake's native
   daily credit limit parameters.
+- **AI Budgets (Native)** — Create Snowflake-native Budget
+  objects scoped to teams via cost center tags. Tracks spend
+  across AI Functions, Cortex Code, Cortex Agents, and
+  Snowflake Intelligence.
 - **Model Allowlist** — Restrict which AI models are
   available to control costs.
 - **Email Alerts** — Get notified when users approach
@@ -186,7 +285,10 @@ credit spending across your Snowflake account.
 3. **Account Budget** — Set an account-wide credit limit
 4. **Enforcement** — Enable automatic blocking for
    over-budget users via native daily credit limits
-5. **Settings** — Configure timezone, defaults, and
+5. **AI Budgets (Native)** — Tag users by cost center and
+   create native Snowflake Budget objects for team-level
+   AI spend tracking
+6. **Settings** — Configure timezone, defaults, and
    view audit logs
 """)
 

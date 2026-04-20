@@ -1,20 +1,24 @@
 import streamlit as st
 import pandas as pd
 
-from lib.db import (
-    run_query, run_ddl, get_config, get_users, clear_caches, log_audit,
+from lib.connection import run_query, run_ddl, log_audit, FQN
+from lib.config import get_config, clear_caches
+from lib.usage_queries import get_users, get_all_users_spend, CORTEX_CODE_PRICING
+from lib.enforcement import (
     get_enforcement_status, get_enforcement_log, get_model_allowlist,
-    set_model_allowlist, get_available_models, revoke_user_cortex_access,
-    grant_user_cortex_access, send_budget_alert,
-    get_all_users_spend, run_enforcement_cycle, check_alert_already_sent,
-    record_alert_sent, FQN, LATENCY_BANNER, CORTEX_CODE_PRICING,
-    _send_slack_alert, get_scheduled_task_status, create_enforcement_task,
+    set_model_allowlist, revoke_user_cortex_access,
+    grant_user_cortex_access, run_enforcement_cycle,
+    get_scheduled_task_status, create_enforcement_task,
     suspend_enforcement_task, drop_enforcement_task,
+)
+from lib.alerts import send_budget_alert, _send_slack_alert
+from lib.credit_limits import (
     get_account_credit_limits, set_account_credit_limit, unset_account_credit_limit,
     get_all_users_credit_limits, user_is_blocked, get_user_credit_limit,
     set_user_credit_limit, unset_user_credit_limit,
     block_user_cortex_code, unblock_user_cortex_code,
 )
+from lib.usage_queries import get_available_models
 from lib.time import get_period_bounds, format_period
 
 st.header("Enforcement & Controls")
@@ -625,7 +629,7 @@ GRANT ROLE CORTEX_CODE_PREMIUM TO USER ml_lead;
 
     with st.expander("What does Apply Model Allowlist do?", expanded=False):
         st.markdown(
-            "- Runs `ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION = '<model_list>'`\n\n"
+            "- Runs `ALTER ACCOUNT SET CORTEX_MODELS_ALLOWLIST = '<model_list>'`\n\n"
             "- **Allow All:** Removes model restrictions entirely\n"
             "- **Allow Selected:** Only the chosen models will be usable\n"
             "- **Block All:** Sets the allowlist to NONE \u2014 **no one** can use Cortex AI\n\n"

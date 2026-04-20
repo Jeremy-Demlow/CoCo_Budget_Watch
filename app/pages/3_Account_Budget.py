@@ -1,11 +1,13 @@
 import streamlit as st
 import altair as alt
 
-from lib.db import (
-    run_query, run_ddl, get_account_budget, get_config,
-    get_model_breakdown, log_audit, clear_caches, FQN, LATENCY_BANNER,
+from lib.connection import run_query, FQN
+from lib.config import get_config, LATENCY_BANNER
+from lib.usage_queries import (
+    get_account_budget, get_model_breakdown,
     get_account_usage_credits, get_account_user_breakdown,
 )
+from lib.budget_service import save_account_budget, grant_account_topup
 from lib.time import get_period_bounds, format_period
 
 st.header("Account Budget")
@@ -51,22 +53,12 @@ with col_set:
                                key="acct_period")
 
     if st.button("Save Account Budget", type="primary", key="save_acct"):
-        run_ddl(
-            f"UPDATE {FQN}.ACCOUNT_BUDGET SET "
-            f"IS_ACTIVE = FALSE, EFFECTIVE_END = CURRENT_TIMESTAMP() "
-            f"WHERE IS_ACTIVE = TRUE"
-        )
-        safe_period = acct_period.replace("'", "''")
-        err = run_ddl(
-            f"INSERT INTO {FQN}.ACCOUNT_BUDGET "
-            f"(IS_ACTIVE, BASE_PERIOD_CREDITS, PERIOD_TYPE, WARNING_THRESHOLD_PCT) "
-            f"VALUES (TRUE, {float(new_budget)}, '{safe_period}', {int(new_threshold)})"
+        err = save_account_budget(
+            new_budget, acct_period, new_threshold, old_budget=current_budget
         )
         if err:
             st.error(f"Failed: {err}")
         else:
-            log_audit("UPDATE", "ACCOUNT", old_value=current_budget, new_value=new_budget)
-            clear_caches()
             st.success("Account budget updated.")
             st.rerun()
 
@@ -78,17 +70,10 @@ with col_set:
     tu_notes = st.text_input("Notes", key="acct_topup_notes")
 
     if st.button("Grant Account Top-up", key="acct_topup_btn"):
-        notes_val = tu_notes.replace("'", "''") if tu_notes else ""
-        err = run_ddl(
-            f"INSERT INTO {FQN}.BUDGET_TOPUPS "
-            f"(TARGET_TYPE, CREDITS, EFFECTIVE_START, EFFECTIVE_END, NOTES) "
-            f"VALUES ('ACCOUNT', {tu_credits}, '{ps}', '{pe}', '{notes_val}')"
-        )
+        err = grant_account_topup(tu_credits, ps, pe, tu_notes or "")
         if err:
             st.error(f"Failed: {err}")
         else:
-            log_audit("TOPUP", "ACCOUNT", new_value=tu_credits, notes=tu_notes)
-            clear_caches()
             st.success(f"Granted {tu_credits} account credits.")
             st.rerun()
 
@@ -113,7 +98,7 @@ with col_status:
         topup_df, _ = run_query(acct_topup_sql)
         topup_credits = float(topup_df.iloc[0]["TOPUP_CREDITS"]) if not topup_df.empty else 0.0
 
-    effective = new_budget + topup_credits
+    effective = current_budget + topup_credits
     pct = (total_used / effective * 100) if effective > 0 else 0
 
     with metrics_placeholder.container():
@@ -138,7 +123,7 @@ with col_status:
 
     if pct >= 100:
         st.error("Account is **OVER** budget! Consider enabling Enforcement to restrict access.")
-    elif pct >= new_threshold:
+    elif pct >= current_threshold:
         st.warning("Account is approaching the budget limit.")
     elif pct > 0:
         st.success("Account spending is within budget.")

@@ -2,6 +2,7 @@
 -- CoCo Budgets: Backend DDL
 -- Creates database, schema, tables, and seeds default config.
 -- Run via SnowSQL/SnowCLI or in a Snowsight worksheet.
+-- Idempotent: safe to re-run at any time.
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -14,7 +15,7 @@ USE DATABASE COCO_BUDGETS_DB;
 USE SCHEMA BUDGETS;
 
 -- ---------------------------------------------------------------------------
--- Tables
+-- Advisory Budget Tables (existing)
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS USER_BUDGETS (
@@ -77,7 +78,7 @@ CREATE TABLE IF NOT EXISTS BUDGET_CONFIG (
 );
 
 -- ---------------------------------------------------------------------------
--- Enforcement & Alert Tables
+-- Enforcement & Alert Tables (existing)
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS ENFORCEMENT_LOG (
@@ -99,7 +100,54 @@ CREATE TABLE IF NOT EXISTS ALERT_STATE (
 );
 
 -- ---------------------------------------------------------------------------
--- Seed default config
+-- Native AI Budget Tables (new)
+-- ---------------------------------------------------------------------------
+
+-- Tracks cost center tag values defined for native budget scoping
+CREATE TABLE IF NOT EXISTS COST_CENTER_TAGS (
+    TAG_ID              NUMBER          AUTOINCREMENT,
+    TAG_DB              VARCHAR         NOT NULL DEFAULT 'COCO_BUDGETS_DB',
+    TAG_SCHEMA          VARCHAR         NOT NULL DEFAULT 'BUDGETS',
+    TAG_NAME            VARCHAR         NOT NULL DEFAULT 'COST_CENTER',
+    TAG_VALUE           VARCHAR         NOT NULL,
+    DESCRIPTION         VARCHAR,
+    CREATED_AT          TIMESTAMP_TZ    DEFAULT CURRENT_TIMESTAMP(),
+    CREATED_BY          VARCHAR         DEFAULT CURRENT_USER(),
+    PRIMARY KEY (TAG_ID),
+    UNIQUE (TAG_DB, TAG_SCHEMA, TAG_NAME, TAG_VALUE)
+);
+
+-- Audit trail for every ALTER USER ... SET/UNSET TAG operation
+CREATE TABLE IF NOT EXISTS USER_TAG_ASSIGNMENTS (
+    ASSIGNMENT_ID       NUMBER          AUTOINCREMENT,
+    USER_ID             NUMBER          NOT NULL,
+    USER_NAME           VARCHAR         NOT NULL,
+    TAG_DB              VARCHAR         NOT NULL,
+    TAG_SCHEMA          VARCHAR         NOT NULL,
+    TAG_NAME            VARCHAR         NOT NULL,
+    TAG_VALUE           VARCHAR,
+    ACTION              VARCHAR         NOT NULL DEFAULT 'SET',
+    ASSIGNED_AT         TIMESTAMP_TZ    DEFAULT CURRENT_TIMESTAMP(),
+    ASSIGNED_BY         VARCHAR         DEFAULT CURRENT_USER(),
+    PRIMARY KEY (ASSIGNMENT_ID)
+);
+
+-- Registry of native Snowflake Budget objects created via the app
+CREATE TABLE IF NOT EXISTS SNOWFLAKE_BUDGET_REGISTRY (
+    BUDGET_ID           NUMBER          AUTOINCREMENT,
+    BUDGET_DB           VARCHAR         NOT NULL DEFAULT 'COCO_BUDGETS_DB',
+    BUDGET_SCHEMA       VARCHAR         NOT NULL DEFAULT 'BUDGETS',
+    BUDGET_NAME         VARCHAR         NOT NULL,
+    CREDIT_QUOTA        NUMBER(20,6)    NOT NULL,
+    DESCRIPTION         VARCHAR,
+    CREATED_AT          TIMESTAMP_TZ    DEFAULT CURRENT_TIMESTAMP(),
+    CREATED_BY          VARCHAR         DEFAULT CURRENT_USER(),
+    PRIMARY KEY (BUDGET_ID),
+    UNIQUE (BUDGET_DB, BUDGET_SCHEMA, BUDGET_NAME)
+);
+
+-- ---------------------------------------------------------------------------
+-- Seed default config (WHEN NOT MATCHED = never overwrites existing values)
 -- ---------------------------------------------------------------------------
 MERGE INTO BUDGET_CONFIG tgt
 USING (
@@ -118,7 +166,12 @@ USING (
         ('ALERT_ON_OVER',                    'true'),
         ('CREDIT_RATE_USD',                  '2.00'),
         ('SLACK_ENABLED',                    'false'),
-        ('SLACK_WEBHOOK_URL',                '')
+        ('SLACK_WEBHOOK_URL',                ''),
+        ('NATIVE_BUDGETS_ENABLED',           'false'),
+        ('BUDGET_TAG_DB',                    'COCO_BUDGETS_DB'),
+        ('BUDGET_TAG_SCHEMA',                'BUDGETS'),
+        ('BUDGET_TAG_NAME',                  'COST_CENTER'),
+        ('DEFAULT_NATIVE_BUDGET_QUOTA',      '1000')
 ) AS src(CONFIG_KEY, CONFIG_VALUE)
 ON tgt.CONFIG_KEY = src.CONFIG_KEY
 WHEN NOT MATCHED THEN

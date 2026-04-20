@@ -3,14 +3,14 @@ import altair as alt
 import pandas as pd
 from datetime import datetime, timedelta
 
-from lib.db import (
-    run_query, get_config, get_coco_active_users,
-    get_usage_by_user, get_daily_trend, get_model_breakdown,
-    get_all_users_spend, get_daily_cumulative_spend,
-    get_account_budget, FQN, LATENCY_BANNER,
-    get_cache_efficiency, get_output_ratio, get_ai_services_context,
-    get_model_token_type_breakdown, get_rolling_24h_spend,
-    get_new_user_onboarding,
+from lib.connection import run_query, FQN
+from lib.config import get_config, LATENCY_BANNER
+from lib.usage_queries import (
+    get_coco_active_users, get_usage_by_user, get_daily_trend,
+    get_model_breakdown, get_all_users_spend, get_daily_cumulative_spend,
+    get_account_budget, get_cache_efficiency, get_output_ratio,
+    get_ai_services_context, get_model_token_type_breakdown,
+    get_rolling_24h_spend, get_new_user_onboarding,
 )
 from lib.time import get_period_bounds, format_period
 

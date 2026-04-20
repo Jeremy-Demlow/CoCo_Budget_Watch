@@ -1,9 +1,9 @@
 import streamlit as st
 import pandas as pd
 
-from lib.db import (
-    run_query, run_ddl, get_config, clear_caches, FQN, LATENCY_BANNER,
-)
+from lib.connection import run_query, FQN
+from lib.config import get_config, clear_caches, LATENCY_BANNER
+from lib.budget_service import save_config_batch
 
 st.header("Settings")
 
@@ -73,24 +73,11 @@ with tab_config:
             "ENABLE_MODEL_DRILLDOWN": str(enable_drilldown).lower(),
             "CREDIT_RATE_USD": f"{credit_rate:.2f}",
         }
-        errors = []
-        for k, v in updates.items():
-            safe_v = v.replace("'", "''")
-            err = run_ddl(
-                f"MERGE INTO {FQN}.BUDGET_CONFIG tgt "
-                f"USING (SELECT '{k}' AS CK, '{safe_v}' AS CV) src "
-                f"ON tgt.CONFIG_KEY = src.CK "
-                f"WHEN MATCHED THEN UPDATE SET CONFIG_VALUE = src.CV, UPDATED_AT = CURRENT_TIMESTAMP() "
-                f"WHEN NOT MATCHED THEN INSERT (CONFIG_KEY, CONFIG_VALUE, UPDATED_AT) "
-                f"VALUES (src.CK, src.CV, CURRENT_TIMESTAMP())"
-            )
-            if err:
-                errors.append(f"{k}: {err}")
+        errors = save_config_batch(updates)
 
         if errors:
             st.error("Some config updates failed:\n" + "\n".join(errors))
         else:
-            clear_caches()
             st.success("Configuration saved.")
             st.rerun()
 

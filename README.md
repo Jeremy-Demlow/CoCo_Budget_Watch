@@ -93,14 +93,22 @@ Configure budget defaults, credit-to-USD rates, timezone, and view audit logs.
 +------------------------------------------------------------------------+
 ```
 
-### How the Two Layers Work Together
+### Budget System Decision Table
 
-| Layer | What it does | How it works |
-|-------|-------------|--------------|
-| **App-managed budgets** (User Budgets / Account Budget pages) | Track cumulative period spend against a credit limit | Stored in `COCO_BUDGETS_DB.BUDGETS` tables; compared during enforcement cycles |
-| **Native Snowflake parameters** (Cost Controls tab) | Cap daily credit usage in a rolling 24-hour window | `ALTER ACCOUNT/USER SET` parameters; enforced natively by Snowflake |
-| **Enforcement** (Budget Enforcement tab) | Automatically block/unblock users based on period budgets | Sets native user-level params to `0` (block) or removes them (unblock) |
-| **Model allowlist** (Model Allowlist tab) | Restrict which AI models are available | `ALTER ACCOUNT SET CORTEX_ENABLED_CROSS_REGION`; takes effect immediately |
+| What you need | Use this system |
+|---|---|
+| Block a user who exceeds a monthly credit limit | Advisory (Enforcement page) |
+| Track how much the Engineering team spends on AI Functions + Cortex Code | Native (AI Budgets page) |
+| Attribute AI spend across cost centers | Native (AI Budgets page) |
+| Restrict which AI models are available account-wide | Model Allowlist (Enforcement page) |
+
+### How the Three Layers Work Together
+
+| Layer | What it does | Blocking? | How it works |
+|-------|-------------|-----------|--------------|
+| **Advisory budgets** (User Budgets / Account Budget) | Track cumulative period spend against a credit limit | Yes — via Enforcement | Stored in `COCO_BUDGETS_DB.BUDGETS` tables; compared during enforcement cycles |
+| **Native Snowflake parameters** (Cost Controls tab) | Cap daily credit usage in a rolling 24-hour window | Yes — natively by Snowflake | `ALTER ACCOUNT/USER SET` parameters |
+| **Native Budget objects** (AI Budgets tab) | Track AI spend by team via cost center tags across Cortex Code, AI Functions, Agents, Snowflake Intelligence | No — tracking only | Snowflake `BUDGET` objects; users scoped via `ALTER USER SET TAG` |
 
 ### Data Sources
 
@@ -142,6 +150,9 @@ Credits are computed from the `TOKENS_GRANULAR` variant column using Snowflake's
 | **Session keepalive** | Prevents Streamlit WebSocket timeouts during long idle periods |
 | **Self-bootstrapping** | App creates its own backend tables on first run |
 | **Dual-mode deployment** | Runs locally or in Streamlit in Snowflake |
+| **Native AI Budgets** | Create Snowflake Budget objects scoped to teams via cost center tags; tracks Cortex Code, AI Functions, Agents, Snowflake Intelligence |
+| **Cost center tagging** | Tag users with cost center values via `ALTER USER SET TAG`; full audit trail in `USER_TAG_ASSIGNMENTS` |
+| **Guarded feature isolation** | AI Budgets page uses guarded import — any load failure shows an error on that page only, never crashes the rest of the app |
 
 ## Important Limitations
 
@@ -151,7 +162,8 @@ Credits are computed from the `TOKENS_GRANULAR` variant column using Snowflake's
 | **Rolling 24h vs period budgets** | Native Snowflake parameters enforce a rolling 24-hour window. App-managed budgets track cumulative period spend. These are complementary but different. |
 | **365-day retention** | Source views only cover the last year. |
 | **Estimated costs** | USD amounts are approximations based on a configurable credit rate. Always validate against your official Snowflake invoice. |
-| **ACCOUNTADMIN required** | `ALTER ACCOUNT SET` and `ALTER USER SET` for credit limit parameters require ACCOUNTADMIN. |
+| **ACCOUNTADMIN required for some operations** | `ALTER ACCOUNT SET CORTEX_MODELS_ALLOWLIST` requires ACCOUNTADMIN. Budget creation and enforcement require `COCO_BUDGETS_OWNER` (see `deploy/rbac.sql`). |
+| **Native budgets track, not enforce** | Native Snowflake Budget objects provide attribution and visibility by team; they do not block users. Use Enforcement + User Budgets for hard limits. |
 | **SIS Streamlit version** | The app requires Streamlit >= 1.39.0 (for `st.Page`/`st.navigation`). Ensure `environment.yml` specifies a compatible version. |
 
 ## Quick Start
@@ -187,13 +199,15 @@ The app will be available in Snowsight under **Streamlit** > **COCO_BUDGETS**.
 
 ### 3. (Optional) RBAC Setup
 
-For least-privilege deployments, run `deploy/rbac.sql` to create:
+For least-privilege deployments, run `deploy/rbac.sql` as ACCOUNTADMIN. After first run, `COCO_BUDGETS_OWNER` is fully self-sufficient — no ACCOUNTADMIN needed for day-to-day app operations.
 
-| Role | Purpose |
-|------|---------|
-| `COCO_BUDGETS_OWNER` | Owns DB objects; runs DDL; has IMPORTED PRIVILEGES on SNOWFLAKE |
-| `COCO_BUDGETS_APP_USER` | DML on budget tables; can run app and manage budgets |
-| `COCO_BUDGETS_READER` | Read-only dashboard access |
+| Role | Purpose | Key Privileges |
+|------|---------|----------------|
+| `COCO_BUDGETS_OWNER` | Owns DB objects; manages budgets, tags, enforcement | IMPORTED PRIVILEGES, MANAGE USER, APPLY TAG, CREATE TAG, CREATE BUDGET |
+| `COCO_BUDGETS_APP_USER` | DML on budget tables; can run app and manage budgets | DML on all tables |
+| `COCO_BUDGETS_READER` | Read-only dashboard access | SELECT on all tables |
+
+> **Note:** `ALTER ACCOUNT SET CORTEX_MODELS_ALLOWLIST` always requires ACCOUNTADMIN — this is a Snowflake platform constraint that cannot be delegated.
 
 ### Self-Bootstrap (Alternative)
 
@@ -286,6 +300,7 @@ CoCo_Budgets/
 |   +-- snowflake.yml             # Snowflake CLI project definition
 |   +-- lib/
 |   |   +-- db.py                 # All SQL queries, Snowflake connection, native param management
+|   |   +-- budget_api.py         # Native Snowflake Budget API (tags, budgets, shared resources)
 |   |   +-- time.py               # Period boundary calculations
 |   +-- pages/
 |       +-- 1_Dashboard.py        # KPIs, charts, trends, budget status
@@ -293,9 +308,11 @@ CoCo_Budgets/
 |       +-- 3_Account_Budget.py   # Account-level budget + progress
 |       +-- 4_Settings.py         # Configuration, audit log, data freshness
 |       +-- 5_Enforcement.py      # Cost controls, enforcement, allowlist, alerts, scheduling
+|       +-- 6_AI_Budgets.py       # Native Snowflake Budget objects, cost center tagging
 +-- deploy/
-|   +-- backend.sql               # Full backend DDL (tables + config seed)
-|   +-- rbac.sql                  # Least-privilege role setup
+|   +-- backend.sql               # Full backend DDL (tables + config seed, idempotent)
+|   +-- rbac.sql                  # Least-privilege roles (includes MANAGE USER fix)
+|   +-- ai_budgets_setup.sql      # Optional quick-start: TAG + Budget + shared resources
 |   +-- sis_prereqs.sql           # Stage creation for SIS deployment
 +-- docs/
 |   +-- images/                   # Screenshots for README
@@ -321,7 +338,11 @@ All settings are stored in `COCO_BUDGETS_DB.BUDGETS.BUDGET_CONFIG`:
 | `ALERT_ON_WARNING` | `true` | Send alerts when users hit warning threshold |
 | `ALERT_ON_OVER` | `true` | Send alerts when users exceed budget |
 | `SLACK_ENABLED` | `false` | Enable Slack webhook notifications |
-| `SLACK_WEBHOOK_URL` | (empty) | Slack incoming webhook URL |
+| `NATIVE_BUDGETS_ENABLED` | `false` | Feature flag for native AI Budgets tab |
+| `BUDGET_TAG_DB` | `COCO_BUDGETS_DB` | Database containing the COST_CENTER tag |
+| `BUDGET_TAG_SCHEMA` | `BUDGETS` | Schema containing the COST_CENTER tag |
+| `BUDGET_TAG_NAME` | `COST_CENTER` | Tag name used for cost center assignment |
+| `DEFAULT_NATIVE_BUDGET_QUOTA` | `1000` | Default credit quota when creating native budgets |
 
 ## Contributing
 

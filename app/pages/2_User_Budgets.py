@@ -1,11 +1,16 @@
 import streamlit as st
 import pandas as pd
 
-from lib.db import (
-    run_query, run_ddl, get_users, get_user_budgets, get_config,
-    log_audit, clear_caches, FQN, LATENCY_BANNER,
-    get_enforcement_status, restore_access_if_under_budget, user_is_blocked,
-    grant_user_cortex_access, get_all_users_spend, user_has_access,
+from lib.connection import FQN
+from lib.config import get_config, clear_caches, LATENCY_BANNER
+from lib.usage_queries import get_users, get_user_budgets
+from lib.credit_limits import user_is_blocked
+from lib.enforcement import (
+    get_enforcement_status, restore_access_if_under_budget,
+)
+from lib.budget_service import (
+    create_user_budget, update_user_budget,
+    bulk_create_user_budgets, grant_user_topup,
 )
 from lib.time import get_period_bounds
 
@@ -69,17 +74,10 @@ with tab_add:
 
             if st.button("Add Budget", type="primary", key="add_btn"):
                 uid = user_options[selected]
-                safe_period = period.replace("'", "''")
-                err = run_ddl(
-                    f"INSERT INTO {FQN}.USER_BUDGETS "
-                    f"(USER_ID, BASE_PERIOD_CREDITS, PERIOD_TYPE, WARNING_THRESHOLD_PCT) "
-                    f"VALUES ({int(uid)}, {float(credits)}, '{safe_period}', {int(threshold)})"
-                )
+                err = create_user_budget(uid, credits, period, threshold)
                 if err:
                     st.error(f"Failed: {err}")
                 else:
-                    log_audit("CREATE", "USER", uid, new_value=credits, notes=f"Period={period}")
-                    clear_caches()
                     st.success(f"Budget added for {selected}")
                     st.rerun()
 
@@ -107,20 +105,15 @@ with tab_edit:
                 orig = budgets_df.loc[idx]
                 if (row.get("BASE_PERIOD_CREDITS") != orig.get("BASE_PERIOD_CREDITS") or
                     row.get("WARNING_THRESHOLD_PCT") != orig.get("WARNING_THRESHOLD_PCT") or
-                    row.get("IS_ACTIVE") != orig.get("IS_ACTIVE")):
+                    row.get("IS_ACTIVE") != orig.get("IS_ACTIVE") or
+                    row.get("PERIOD_TYPE") != orig.get("PERIOD_TYPE")):
                     uid = row["USER_ID"]
-                    err = run_ddl(
-                        f"UPDATE {FQN}.USER_BUDGETS SET "
-                        f"BASE_PERIOD_CREDITS = {row['BASE_PERIOD_CREDITS']}, "
-                        f"WARNING_THRESHOLD_PCT = {row['WARNING_THRESHOLD_PCT']}, "
-                        f"IS_ACTIVE = {row['IS_ACTIVE']}, "
-                        f"UPDATED_AT = CURRENT_TIMESTAMP() "
-                        f"WHERE USER_ID = {uid}"
+                    err = update_user_budget(
+                        uid, row["BASE_PERIOD_CREDITS"],
+                        row["WARNING_THRESHOLD_PCT"], row["IS_ACTIVE"],
+                        row["PERIOD_TYPE"], old_credits=orig.get("BASE_PERIOD_CREDITS"),
                     )
                     if not err:
-                        log_audit("UPDATE", "USER", uid,
-                                  old_value=orig.get("BASE_PERIOD_CREDITS"),
-                                  new_value=row["BASE_PERIOD_CREDITS"])
                         changes += 1
             if changes:
                 clear_caches()
@@ -173,20 +166,8 @@ with tab_bulk:
                                    key="bulk_period")
 
         if st.button("Apply Default Budget to All", type="primary", key="bulk_btn"):
-            count = 0
-            for _, u in unbudgeted.iterrows():
-                uid = u["USER_ID"]
-                safe_bulk_period = bulk_period.replace("'", "''")
-                err = run_ddl(
-                    f"INSERT INTO {FQN}.USER_BUDGETS "
-                    f"(USER_ID, BASE_PERIOD_CREDITS, PERIOD_TYPE, WARNING_THRESHOLD_PCT) "
-                    f"SELECT {int(uid)}, {float(bulk_credits)}, '{safe_bulk_period}', {int(default_threshold)} "
-                    f"WHERE NOT EXISTS (SELECT 1 FROM {FQN}.USER_BUDGETS WHERE USER_ID={int(uid)})"
-                )
-                if not err:
-                    count += 1
-            log_audit("BULK_CREATE", "USER", notes=f"Added {count} users at {bulk_credits} credits")
-            clear_caches()
+            uids = [int(u["USER_ID"]) for _, u in unbudgeted.iterrows()]
+            count = bulk_create_user_budgets(uids, bulk_credits, bulk_period, default_threshold)
             st.success(f"Added budgets for {count} users.")
             st.rerun()
     else:
@@ -228,20 +209,15 @@ with tab_topup:
 
         if st.button("Grant Top-up", type="primary", key="topup_btn"):
             uid = topup_options[tu_selected]
-            notes_val = tu_notes.replace("'", "''") if tu_notes else ""
-            err = run_ddl(
-                f"INSERT INTO {FQN}.BUDGET_TOPUPS "
-                f"(TARGET_TYPE, USER_ID, CREDITS, EFFECTIVE_START, EFFECTIVE_END, NOTES) "
-                f"VALUES ('USER', {uid}, {tu_credits}, "
-                f"'{p_start.strftime('%Y-%m-%d %H:%M:%S')}', "
-                f"'{p_end.strftime('%Y-%m-%d %H:%M:%S')}', "
-                f"'{notes_val}')"
+            err = grant_user_topup(
+                uid, tu_credits,
+                p_start.strftime('%Y-%m-%d %H:%M:%S'),
+                p_end.strftime('%Y-%m-%d %H:%M:%S'),
+                tu_notes or "",
             )
             if err:
                 st.error(f"Failed: {err}")
             else:
-                log_audit("TOPUP", "USER", uid, new_value=tu_credits, notes=tu_notes)
-                clear_caches()
                 st.success(f"Granted {tu_credits} credits to {tu_selected}")
 
                 enforcement = get_enforcement_status()

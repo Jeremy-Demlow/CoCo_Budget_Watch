@@ -12,11 +12,20 @@ entities:
     pages_dir: pages/
     artifacts:
       - environment.yml
-      - lib/db.py
-      - lib/time.py
       - lib/__init__.py
+      - lib/connection.py
+      - lib/config.py
+      - lib/usage_queries.py
+      - lib/credit_limits.py
+      - lib/alerts.py
+      - lib/enforcement.py
+      - lib/budget_service.py
+      - lib/db.py
+      - lib/budget_api.py
+      - lib/time.py
       - pages/1_Dashboard.py
       - pages/2_User_Budgets.py
       - pages/3_Account_Budget.py
       - pages/4_Settings.py
       - pages/5_Enforcement.py
+      - pages/6_AI_Budgets.py
