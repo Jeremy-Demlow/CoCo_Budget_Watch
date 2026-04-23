@@ -172,6 +172,7 @@ snow connection add
 | `app/snowflake.yml` | SIS project definition — lists all artifact files |
 | `app/environment.yml` | SIS conda dependencies |
 | `app/streamlit_app.py` | Entry point, bootstrap DDL, sidebar |
+| `app/pages/0_Setup.py` | Setup wizard — diagnostics, fix buttons, copy-paste SQL |
 | `deploy/backend.sql` | Backend DDL (idempotent) |
 | `deploy/rbac.sql` | Least-privilege roles |
 | `deploy/sis_prereqs.sql` | Stage creation |
@@ -193,7 +194,15 @@ SELECT COUNT(*) FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_CLI_USAGE_HISTORY
 WHERE START_TIMESTAMP > DATEADD('day', -7, CURRENT_TIMESTAMP());
 ```
 ### Tables not created on first load
-The bootstrap DDL runs in `streamlit_app.py`. Check the app logs for errors. Alternatively, pre-create tables:
+The bootstrap DDL runs in `streamlit_app.py` but requires CREATE DATABASE privilege. If the first user to open the app lacks this privilege, bootstrap fails silently.
+
+**Self-healing:** Navigate to the **Setup** page (appears first in nav when bootstrap is incomplete). The wizard:
+1. Runs read-only diagnostic checks on every backend object
+2. Shows a pass/fail checklist for database, schema, 10 tables, and config seed
+3. Provides "Run This Step" buttons for users with sufficient privileges
+4. Offers a "Copy Full Setup SQL" block that any user can hand to their admin
+
+**Alternative:** Pre-create all objects before deploying:
 ```bash
 snow sql -f deploy/backend.sql --connection <CONNECTION_NAME>
 ```

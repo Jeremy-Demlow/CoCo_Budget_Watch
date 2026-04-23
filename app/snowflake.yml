@@ -23,6 +23,7 @@ entities:
       - lib/db.py
       - lib/budget_api.py
       - lib/time.py
+      - pages/0_Setup.py
       - pages/1_Dashboard.py
       - pages/2_User_Budgets.py
       - pages/3_Account_Budget.py

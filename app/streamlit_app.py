@@ -169,14 +169,18 @@ def bootstrap():
 
 boot_ok = bootstrap()
 
-dashboard = st.Page("pages/1_Dashboard.py", title="Dashboard", icon="📊", default=True)
+setup_page = st.Page("pages/0_Setup.py", title="Setup", icon="🔧")
+dashboard = st.Page("pages/1_Dashboard.py", title="Dashboard", icon="📊", default=boot_ok)
 user_budgets = st.Page("pages/2_User_Budgets.py", title="User Budgets", icon="👤")
 account_budget = st.Page("pages/3_Account_Budget.py", title="Account Budget", icon="🏢")
 enforcement = st.Page("pages/5_Enforcement.py", title="Enforcement & Controls", icon="🛡️")
 ai_budgets = st.Page("pages/6_AI_Budgets.py", title="AI Budgets (Native)", icon="🏷️")
 settings = st.Page("pages/4_Settings.py", title="Settings", icon="⚙️")
 
-pg = st.navigation([dashboard, user_budgets, account_budget, enforcement, ai_budgets, settings])
+if boot_ok:
+    pg = st.navigation([dashboard, user_budgets, account_budget, enforcement, ai_budgets, settings, setup_page])
+else:
+    pg = st.navigation([setup_page, dashboard, user_budgets, account_budget, enforcement, ai_budgets, settings])
 
 with st.sidebar:
     st.title("CoCo Budgets")
@@ -233,15 +237,10 @@ with st.sidebar:
                         st.session_state.pop("_available_roles", None)
                         st.rerun()
             if not boot_ok:
-                boot_errors = st.session_state.get("_bootstrap_errors", [])
-                with st.expander(f"⚠️ Bootstrap incomplete — role {current_role}", expanded=True):
-                    st.warning(
-                        "Some setup steps failed. Switch to **COCO_BUDGETS_OWNER** or **ACCOUNTADMIN** "
-                        "to create the budget database and tables, then click **Refresh Data**."
-                    )
-                    if boot_errors:
-                        for e in boot_errors[:3]:
-                            st.caption(f"• {e}")
+                st.warning(
+                    "**Setup Required** — Some backend objects are missing. "
+                    "Go to the **Setup** page for step-by-step instructions."
+                )
 
     st.divider()
     if st.button("🔄 Refresh Data"):
